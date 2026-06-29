@@ -1,0 +1,65 @@
+/* overlay.css
+ * Styles for the Queens Solver overlay. The overlay never sits in the
+ * page's own layout flow - it's a position:fixed layer appended to
+ * document.body, so none of this can affect (or be affected by) LinkedIn's
+ * own styles. Critical positioning (left/top/width/height) is still set
+ * inline from content.js every frame; this file only carries cosmetics.
+ */
+
+#queens-solver-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+#queens-solver-overlay .qs-queen {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  line-height: 1;
+  color: #f5c542;
+  user-select: none;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.65));
+  animation: qs-pulse 1.6s ease-in-out infinite;
+}
+
+#queens-solver-overlay .qs-dismiss {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #1f1f23;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+#queens-solver-overlay .qs-dismiss:hover {
+  background: #33333a;
+}
+
+@keyframes qs-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+}
