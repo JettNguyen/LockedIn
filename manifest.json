@@ -1,16 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "Queens Solver",
-  "version": "1.0.0",
-  "description": "Solves the LinkedIn Queens puzzle and overlays the solution on top of the page without touching the underlying DOM.",
+  "name": "LockedIn",
+  "version": "1.2.0",
+  "description": "Solves LinkedIn's deterministic puzzle games (Queens, Tango, with more on the way) and overlays the solution on top of the page without touching the underlying DOM.",
   "permissions": ["activeTab", "scripting"],
   "action": {
     "default_popup": "popup.html"
   },
   "content_scripts": [
     {
-      "matches": ["https://www.linkedin.com/games/queens/*"],
-      "js": ["solver.js", "content.js"],
+      "matches": ["https://www.linkedin.com/games/*"],
+      "js": [
+        "shared/overlay.js",
+        "games/queens/solver.js",
+        "games/queens/game.js",
+        "games/tango/solver.js",
+        "games/tango/game.js",
+        "content.js"
+      ],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     }

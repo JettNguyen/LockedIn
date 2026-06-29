@@ -1,12 +1,13 @@
 /* overlay.css
- * Styles for the Queens Solver overlay. The overlay never sits in the
- * page's own layout flow - it's a position:fixed layer appended to
- * document.body, so none of this can affect (or be affected by) LinkedIn's
- * own styles. Critical positioning (left/top/width/height) is still set
- * inline from content.js every frame; this file only carries cosmetics.
+ * Shared, game-agnostic styles for the LockedIn solution overlay. The
+ * overlay never sits in the page's own layout flow - it's a position:fixed
+ * layer appended to document.body, so none of this can affect (or be
+ * affected by) LinkedIn's own styles. Critical positioning (left/top/
+ * width/height) is still set inline from shared/overlay.js every frame;
+ * this file only carries cosmetics.
  */
 
-#queens-solver-overlay {
+#lockedin-solver-overlay {
   position: fixed;
   top: 0;
   left: 0;
@@ -16,20 +17,41 @@
   pointer-events: none;
 }
 
-#queens-solver-overlay .qs-queen {
+/* A translucent, color-tinted highlight covering most of its cell (color,
+ * background and border-color are all set inline per-marker from
+ * shared/overlay.js, since they vary per game/piece type). The wash + ring
+ * is what signals "fill this in" - the icon inside is secondary. */
+#lockedin-solver-overlay .li-marker {
   position: fixed;
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
   line-height: 1;
-  color: #f5c542;
   user-select: none;
-  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.65));
-  animation: qs-pulse 1.6s ease-in-out infinite;
+  box-sizing: border-box;
+  border: 2px solid;
+  border-radius: 18%;
+  animation: li-breathe 2.2s ease-in-out infinite;
+  transition: opacity 0.25s ease;
 }
 
-#queens-solver-overlay .qs-dismiss {
+#lockedin-solver-overlay .li-marker svg {
+  width: 55%;
+  height: 55%;
+}
+
+/* Applied once a game's isFilled() check confirms the user has placed the
+ * matching piece on the real board for that cell. Fading all the way to
+ * invisible (not just dimmer) is the point: a highlight that's gone reads as
+ * unambiguously "done" next to neighboring cells that are still lit up,
+ * whereas a merely-dimmer icon still competes for attention. */
+#lockedin-solver-overlay .li-marker--confirmed {
+  opacity: 0;
+  animation: none;
+}
+
+#lockedin-solver-overlay .li-dismiss {
   position: fixed;
   transform: translate(-50%, -50%);
   display: flex;
@@ -48,18 +70,16 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
 }
 
-#queens-solver-overlay .qs-dismiss:hover {
+#lockedin-solver-overlay .li-dismiss:hover {
   background: #33333a;
 }
 
-@keyframes qs-pulse {
+@keyframes li-breathe {
   0%,
   100% {
-    transform: scale(1);
-    opacity: 0.9;
+    opacity: 0.6;
   }
   50% {
-    transform: scale(1.12);
-    opacity: 1;
+    opacity: 0.95;
   }
 }
