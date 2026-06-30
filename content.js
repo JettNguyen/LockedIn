@@ -6,6 +6,11 @@
 // registered game's detect() matches the current URL and calls its run() -
 // it has no game-specific knowledge so adding a new game never requires
 // touching this file.
+//
+// Auto-solve: a MutationObserver watches for DOM changes so the overlay
+// appears automatically once the game grid finishes loading, without the user
+// needing to open the popup. The same observer resets on URL changes so
+// navigating between game pages (LinkedIn is a SPA) re-triggers the solve.
 
 (function () {
   function findActiveGame() {
@@ -34,4 +39,37 @@
       sendResponse({ ok: false, error: err && err.message ? err.message : 'Unknown error.' });
     }
   });
+
+  // Auto-solve logic. Fires on every DOM mutation (covers the game grid
+  // appearing after LinkedIn's async rendering) and on URL changes (SPA
+  // navigation to a new game page). Once the overlay is up it stops trying;
+  // once the URL changes it resets so the next game gets solved fresh.
+  let lastUrl = location.href;
+  let solvedOnThisPage = false;
+
+  function tryAutoSolve() {
+    const url = location.href;
+    if (url !== lastUrl) {
+      lastUrl = url;
+      solvedOnThisPage = false;
+    }
+    if (solvedOnThisPage || window.LockedInOverlay.isActive()) return;
+
+    const game = findActiveGame();
+    if (!game) return;
+
+    try {
+      const result = game.run();
+      if (result && result.ok) solvedOnThisPage = true;
+    } catch (_) {
+      // Grid not ready yet - the observer will retry on the next DOM change.
+    }
+  }
+
+  new MutationObserver(tryAutoSolve).observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+
+  tryAutoSolve(); // also try immediately if the page is already loaded
 })();

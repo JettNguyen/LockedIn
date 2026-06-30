@@ -72,6 +72,13 @@
     return { ok: true, size: n, waypoints, cellElements };
   }
 
+  // VERIFY: LinkedIn marks a Zip cell as drawn (user has dragged through it)
+  // by setting aria-pressed="true" on the cell element. Confirm in DevTools
+  // after dragging through a cell: inspect the cell and check for that attribute.
+  function isCellDrawn(cellEl) {
+    return cellEl.getAttribute('aria-pressed') === 'true';
+  }
+
   function run() {
     const gridRoot = findGrid();
     if (!gridRoot) {
@@ -90,7 +97,7 @@
     window.LockedInOverlay.show({
       anchorEl: gridRoot,
       markers: [],
-      linePath: { cells, color: '#22c55e' },
+      linePath: { cells, color: '#22c55e', isDrawn: isCellDrawn },
     });
     return { ok: true };
   }

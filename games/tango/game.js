@@ -22,29 +22,9 @@
 // highlighted Suns/Moons actually satisfy the visible "=" / "x" marks.
 
 (function () {
-  // Matching Tango's own palette (its Sun icon renders yellow, its Moon
-  // icon renders blue). Plain emoji (☀️/🌙) can't be recolored via CSS -
-  // they always render with their own built-in colors - so these are small
-  // hand-drawn outline icons instead, using currentColor so the overlay's
-  // per-marker `color` actually takes effect.
+  // Matching Tango's own palette.
   const SUN_COLOR = '#f4b400';
   const MOON_COLOR = '#4a90e2';
-  const SUN_ICON =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
-    '<circle cx="12" cy="12" r="5"></circle>' +
-    '<line x1="12" y1="1" x2="12" y2="4"></line>' +
-    '<line x1="12" y1="20" x2="12" y2="23"></line>' +
-    '<line x1="1" y1="12" x2="4" y2="12"></line>' +
-    '<line x1="20" y1="12" x2="23" y2="12"></line>' +
-    '<line x1="4.2" y1="4.2" x2="6.3" y2="6.3"></line>' +
-    '<line x1="17.7" y1="17.7" x2="19.8" y2="19.8"></line>' +
-    '<line x1="4.2" y1="19.8" x2="6.3" y2="17.7"></line>' +
-    '<line x1="17.7" y1="6.3" x2="19.8" y2="4.2"></line>' +
-    '</svg>';
-  const MOON_ICON =
-    '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none">' +
-    '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>' +
-    '</svg>';
 
   function findGrid() {
     const wrapper = document.querySelector('[data-testid="tango-gameboard-wrapper"]');
@@ -126,9 +106,11 @@
     return { ok: true, n, given, constraints, cellElements };
   }
 
-  function isCellFilled(cellEl) {
-    const svg = cellEl.querySelector('[data-testid="cell-empty"], [data-testid="cell-zero"], [data-testid="cell-one"]');
-    return !!svg && svg.dataset.testid !== 'cell-empty';
+  // Returns true only when the cell holds the expected value (0=Sun, 1=Moon),
+  // so the highlight fades only once the user places the correct symbol.
+  function isCellCorrect(cellEl, expected) {
+    const testId = expected === 0 ? 'cell-zero' : 'cell-one';
+    return !!cellEl.querySelector(`[data-testid="${testId}"]`);
   }
 
   function run() {
@@ -149,12 +131,13 @@
     for (let r = 0; r < scrape.n; r++) {
       for (let c = 0; c < scrape.n; c++) {
         if (scrape.given.has(`${r},${c}`)) continue; // already shown on the page, no need to mark it
-        const isSun = solution[r][c] === 0;
+        const expected = solution[r][c]; // 0 = Sun, 1 = Moon
+        const isSun = expected === 0;
         markers.push({
           cellEl: scrape.cellElements[r][c],
-          html: isSun ? SUN_ICON : MOON_ICON,
+          glyph: '',
           color: isSun ? SUN_COLOR : MOON_COLOR,
-          isFilled: isCellFilled,
+          isFilled: (cellEl) => isCellCorrect(cellEl, expected),
         });
       }
     }

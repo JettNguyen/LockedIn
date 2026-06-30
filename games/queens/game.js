@@ -159,7 +159,7 @@
 
     const markers = solution.map(([row, col]) => ({
       cellEl: scrape.cellElements[row][col],
-      glyph: '♛',
+      glyph: '',
       color: '#f5c542',
       isFilled: isCellMarked,
     }));
