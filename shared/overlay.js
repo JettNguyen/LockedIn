@@ -59,6 +59,20 @@ window.LockedInOverlay = (function () {
     btn.style.top = `${anchorRect.top - 8}px`;
   }
 
+  function updateSvgLine(svgLine) {
+    const { polylineEl, cells } = svgLine;
+    const firstRect = cells[0].getBoundingClientRect();
+    const strokeWidth = Math.max(4, Math.min(firstRect.width, firstRect.height) * 0.28);
+    polylineEl.setAttribute('stroke-width', strokeWidth);
+    const points = cells
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return `${r.left + r.width / 2},${r.top + r.height / 2}`;
+      })
+      .join(' ');
+    polylineEl.setAttribute('points', points);
+  }
+
   function startTrackingLoop() {
     function tick() {
       // SPA navigation guard: if the grid this overlay was drawn for has
@@ -74,6 +88,7 @@ window.LockedInOverlay = (function () {
         applyMarkerStyle(markerEl, cellEl.getBoundingClientRect());
         if (isFilled) markerEl.classList.toggle('li-marker--confirmed', isFilled(cellEl));
       }
+      if (state.svgLine) updateSvgLine(state.svgLine);
 
       state.rafId = requestAnimationFrame(tick);
     }
@@ -93,8 +108,12 @@ window.LockedInOverlay = (function () {
    *   html?: string,              // custom markup (e.g. an inline <svg>) - takes priority over glyph
    *   isFilled?: (cellEl: Element) => boolean,
    * }>} opts.markers - one highlight per cell that still needs to be filled in.
+   * @param {{cells: Element[], color?: string}} [opts.linePath] - optional
+   *   ordered list of cell elements to connect with a continuous SVG line
+   *   (e.g. Zip path). When provided, a polyline is drawn through each cell's
+   *   center. Can be used alongside markers (or with an empty markers array).
    */
-  function show({ anchorEl, markers }) {
+  function show({ anchorEl, markers = [], linePath }) {
     const container = document.createElement('div');
     container.id = 'lockedin-solver-overlay';
     document.body.appendChild(container);
@@ -106,6 +125,21 @@ window.LockedInOverlay = (function () {
     dismissBtn.setAttribute('aria-label', 'Dismiss LockedIn solution overlay');
     dismissBtn.addEventListener('click', dismiss);
     container.appendChild(dismissBtn);
+
+    let svgLine = null;
+    if (linePath && linePath.cells && linePath.cells.length > 1) {
+      const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svgEl.setAttribute('class', 'li-path-svg');
+      const polylineEl = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      polylineEl.setAttribute('fill', 'none');
+      polylineEl.setAttribute('stroke', linePath.color || '#f5c542');
+      polylineEl.setAttribute('stroke-linecap', 'round');
+      polylineEl.setAttribute('stroke-linejoin', 'round');
+      polylineEl.setAttribute('opacity', '0.85');
+      svgEl.appendChild(polylineEl);
+      container.appendChild(svgEl);
+      svgLine = { polylineEl, cells: linePath.cells };
+    }
 
     const markerEls = markers.map(({ cellEl, color, glyph, html, isFilled }) => {
       const markerEl = document.createElement('div');
@@ -128,7 +162,7 @@ window.LockedInOverlay = (function () {
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
-    state = { container, dismissBtn, markers: markerEls, anchorEl, observer, rafId: null };
+    state = { container, dismissBtn, markers: markerEls, anchorEl, observer, rafId: null, svgLine };
     startTrackingLoop();
   }
 

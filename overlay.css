@@ -74,6 +74,19 @@
   background: #33333a;
 }
 
+/* SVG canvas used by games that draw a continuous path line (e.g. Zip).
+ * Fixed-positioned so it covers the full viewport; overflow:visible means
+ * the polyline can extend anywhere regardless of the 0×0 container. */
+#lockedin-solver-overlay .li-path-svg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
 @keyframes li-breathe {
   0%,
   100% {
