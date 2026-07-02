@@ -85,7 +85,7 @@ window.LockedInOverlay = (function () {
     container.appendChild(svgEl);
 
     const regionItems = regions.map(({ color, cells, isCellFilled }) => {
-      const fillColor = hexToRgba(color, 0.18);
+      const fillColor = hexToRgba(color, 0.35);
 
       const cellItems = cells.map(({ cellEl, edges }) => {
         const fillRect = document.createElementNS(SVG_NS, 'rect');
@@ -98,7 +98,10 @@ window.LockedInOverlay = (function () {
           line.setAttribute('stroke', color);
           // butt linecap: lines end exactly at cell corners with no overshoot,
           // so adjacent boundary lines meet cleanly at shared corners.
-          line.setAttribute('stroke-linecap', 'butt');
+          // square linecap extends each segment by stroke-width/2 past its
+          // endpoints, closing corners cleanly and bridging any sub-pixel
+          // gaps between adjacent cells' bounding rects.
+          line.setAttribute('stroke-linecap', 'square');
           svgEl.appendChild(line);
           return { side, line };
         });
@@ -275,7 +278,7 @@ window.LockedInOverlay = (function () {
       markerEl.className = 'li-marker';
       const tint = color || '#f5c542';
       markerEl.style.color = tint;
-      markerEl.style.background = hexToRgba(tint, 0.22);
+      markerEl.style.background = hexToRgba(tint, 0.30);
       markerEl.style.borderColor = hexToRgba(tint, 0.7);
       if (html) markerEl.innerHTML = html; // always our own static, hardcoded markup - never page/user-derived content
       else markerEl.textContent = glyph || '';

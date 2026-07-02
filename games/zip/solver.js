@@ -1,42 +1,30 @@
 // games/zip/solver.js
 //
-// Pure backtracking solver for the LinkedIn Zip puzzle. Zero DOM dependencies -
-// input is plain data, output is an ordered array of {r, c} cells.
-//
-// Rules enforced:
-// - The path starts at the cell numbered 1 and visits every cell exactly once.
-// - Numbered cells (waypoints) must be visited in ascending order; you cannot
-//   enter waypoint k until you have already left waypoint k-1.
-// - Movement is strictly orthogonal (up / down / left / right).
-//
-// Pruning: after each step, a flood-fill from any remaining unvisited cell
-// counts how many unvisited cells are reachable. If that count is less than
-// the number of cells still to visit, the current path has cut the grid into
-// disconnected pieces and can never cover all cells - so we backtrack early
-// instead of exploring a hopeless branch.
+// Backtracking Hamiltonian-path solver for LinkedIn Zip.
+// Walls (scraped from the DOM by game.js) block specific moves. Both the
+// main DFS and the connectivity flood-fill respect walls so the pruning
+// heuristic stays accurate in puzzles with internal barriers.
 
 /**
- * @param {Object}             board
- * @param {number}             board.size      - grid is size × size.
- * @param {Map<string,number>} board.waypoints - "row,col" → waypoint number
- *   (1 = start; numbers are consecutive integers starting at 1).
- * @returns {{r:number, c:number}[]|null} ordered path (visit order), or null.
+ * @param {Object}               board
+ * @param {number}               board.size      - grid is size × size.
+ * @param {Map<string,number>}   board.waypoints - "row,col" → waypoint number.
+ * @param {Array<Array<{top:boolean,bottom:boolean,left:boolean,right:boolean}>>}
+ *                               board.walls     - walls[r][c] for each cell.
+ * @returns {{r:number,c:number}[]|null}
  */
-function solveZip(board) {
-  const { size: n, waypoints } = board;
+function solveZip({ size: n, waypoints, walls }) {
   const total = n * n;
 
-  // Locate the starting cell (waypoint 1).
+  // Locate waypoint 1 (start).
   let startR = -1, startC = -1;
   for (const [k, num] of waypoints) {
     if (num === 1) {
-      const parts = k.split(',');
-      startR = Number(parts[0]);
-      startC = Number(parts[1]);
+      [startR, startC] = k.split(',').map(Number);
       break;
     }
   }
-  if (startR === -1) return null; // no starting cell found
+  if (startR === -1) return null;
 
   const visited = Array.from({ length: n }, () => new Array(n).fill(false));
   const path = [];
@@ -44,7 +32,22 @@ function solveZip(board) {
 
   function key(r, c) { return `${r},${c}`; }
 
-  // Flood-fill from (fr, fc) and count unvisited cells reachable from it.
+  // Returns true if moving from (r,c) to (nr,nc) is not blocked by a wall.
+  // We check the departing side of (r,c) AND the arriving side of (nr,nc)
+  // so that walls encoded on only one of the two cells are handled correctly.
+  function canMove(r, c, nr, nc) {
+    const dc = nc - c, dr = nr - r;
+    if (dc ===  1) return !(walls[r][c].right  || walls[nr][nc].left);
+    if (dc === -1) return !(walls[r][c].left   || walls[nr][nc].right);
+    if (dr ===  1) return !(walls[r][c].bottom || walls[nr][nc].top);
+    if (dr === -1) return !(walls[r][c].top    || walls[nr][nc].bottom);
+    return false;
+  }
+
+  // Flood-fill from (fr,fc), counting unvisited cells reachable without
+  // crossing walls. Used for early pruning: if the reachable count is less
+  // than the cells still left to visit, the current path has created an
+  // unreachable pocket and we backtrack immediately.
   function reachableCount(fr, fc) {
     const stack = [[fr, fc]];
     const seen = new Set([key(fr, fc)]);
@@ -56,6 +59,7 @@ function solveZip(board) {
         if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
         const k = key(nr, nc);
         if (visited[nr][nc] || seen.has(k)) continue;
+        if (!canMove(r, c, nr, nc)) continue;
         seen.add(k);
         stack.push([nr, nc]);
         count++;
@@ -68,11 +72,9 @@ function solveZip(board) {
     visited[r][c] = true;
     path.push({ r, c });
 
-    if (path.length === total) return true; // complete Hamiltonian path found
+    if (path.length === total) return true;
 
-    // Connectivity pruning: find any unvisited cell and check that all
-    // remaining unvisited cells are reachable from it (one connected component).
-    // If any are cut off by the path we just extended, backtrack now.
+    // Connectivity pruning.
     const remaining = total - path.length;
     let seedR = -1, seedC = -1;
     outer: for (let row = 0; row < n; row++) {
@@ -90,9 +92,9 @@ function solveZip(board) {
       const nr = r + dr, nc = c + dc;
       if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
       if (visited[nr][nc]) continue;
+      if (!canMove(r, c, nr, nc)) continue;
 
       const wp = waypoints.get(key(nr, nc));
-      // Numbered cells may only be entered when they are the next required stop.
       if (wp !== undefined && wp !== nextRequired) continue;
 
       if (dfs(nr, nc, wp !== undefined ? nextRequired + 1 : nextRequired)) return true;

@@ -160,7 +160,7 @@
     const markers = solution.map(([row, col]) => ({
       cellEl: scrape.cellElements[row][col],
       glyph: '',
-      color: '#f5c542',
+      color: '#000000',
       isFilled: isCellMarked,
     }));
     window.LockedInOverlay.show({ anchorEl: gridRoot, markers });

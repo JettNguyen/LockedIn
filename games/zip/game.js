@@ -1,29 +1,46 @@
 // games/zip/game.js
 //
-// Scraping strategy confirmed against the live LinkedIn Zip DOM. The grid root
-// is [data-testid="interactive-grid"][data-trail-grid]; cells are direct
-// children with data-testid="cell-N" and data-cell-idx for their position.
-// Waypoint cells (the numbered ones) carry aria-label="Number N" on the cell
-// element itself, and render the digit inside a child [data-cell-content="true"]
-// div. Non-waypoint cells have neither attribute.
+// Scraping strategy confirmed against the live LinkedIn Zip DOM.
 //
-// The grid size can be inferred from the cell count (always a perfect square so
-// far). LinkedIn also stores it in CSS custom properties on the grid element but
-// their obfuscated names change across deploys, so cell-count √ is more stable.
+// WALLS: cells with a wall on one of their four sides contain a plain child
+// div (no data-testid, no data-cell-content) whose className includes one of
+// four directional marker classes:
+//   _7354ccbe → wall on the RIGHT side of this cell
+//   eb4f579a  → wall on the LEFT  side of this cell
+//   ce74d07a  → wall on the BOTTOM side of this cell
+//   a1d68cc0  → wall on the BOTTOM side of this cell
+//
+// For horizontal walls LinkedIn marks both adjacent cells (right-cell gets
+// "right", left-cell gets "left"). For vertical walls only the cell that
+// visually displays the wall indicator is marked. In canMove() we check
+// BOTH adjacent cells so a single-sided encoding is handled correctly.
 
 (function () {
-  // Zip's interactive grid carries data-trail-grid; this distinguishes it from
-  // the shared [data-testid="interactive-grid"] used by Tango.
   function findGrid() {
     return document.querySelector('[data-testid="interactive-grid"][data-trail-grid]');
   }
 
-  // Waypoint number from a cell element, or null for non-waypoint cells.
-  // Confirmed: waypoint cells have aria-label="Number N" (e.g. "Number 2").
   function getWaypointNumber(cellEl) {
     const label = cellEl.getAttribute('aria-label') || '';
     const match = label.match(/^Number\s+(\d+)$/i);
     return match ? Number(match[1]) : null;
+  }
+
+  // Return the wall flags for a single cell by inspecting its child divs.
+  // We skip the filled-cell div and the number-content div; everything else
+  // is a candidate wall indicator and we look for the directional class.
+  function parseWalls(cellEl) {
+    const w = { top: false, bottom: false, left: false, right: false };
+    for (const child of cellEl.children) {
+      if (child.dataset.testid === 'filled-cell') continue;
+      if (child.dataset.cellContent) continue;
+      const cls = child.className || '';
+      if (cls.includes('_7354ccbe')) w.right  = true;
+      if (cls.includes('eb4f579a'))  w.left   = true;
+      if (cls.includes('ce74d07a'))  w.bottom = true;
+      if (cls.includes('a1d68cc0'))  w.bottom = true;
+    }
+    return w;
   }
 
   function scrapeBoard(gridRoot) {
@@ -43,6 +60,7 @@
     }
 
     const cellElements = Array.from({ length: n }, () => new Array(n).fill(null));
+    const walls = Array.from({ length: n }, () => new Array(n).fill(null));
     const waypoints = new Map();
 
     for (const cellEl of cellEls) {
@@ -50,31 +68,28 @@
       if (!Number.isInteger(idx)) {
         return { ok: false, error: 'A cell is missing a numeric data-cell-idx.' };
       }
-
       const row = Math.floor(idx / n);
       const col = idx % n;
       if (row < 0 || row >= n || col < 0 || col >= n) {
         return { ok: false, error: `Cell index ${idx} doesn't fit a ${n}x${n} grid.` };
       }
       cellElements[row][col] = cellEl;
+      walls[row][col] = parseWalls(cellEl);
 
       const wp = getWaypointNumber(cellEl);
       if (wp !== null) waypoints.set(`${row},${col}`, wp);
     }
 
-    if (!([...waypoints.values()].includes(1))) {
+    if (![...waypoints.values()].includes(1)) {
       return { ok: false, error: 'Could not find the starting cell (numbered 1).' };
     }
     if (waypoints.size < 2) {
       return { ok: false, error: 'Too few numbered waypoints found on this board.' };
     }
 
-    return { ok: true, size: n, waypoints, cellElements };
+    return { ok: true, size: n, waypoints, cellElements, walls };
   }
 
-  // VERIFY: LinkedIn marks a Zip cell as drawn (user has dragged through it)
-  // by setting aria-pressed="true" on the cell element. Confirm in DevTools
-  // after dragging through a cell: inspect the cell and check for that attribute.
   function isCellDrawn(cellEl) {
     return cellEl.getAttribute('aria-pressed') === 'true';
   }
@@ -88,7 +103,7 @@
     const scrape = scrapeBoard(gridRoot);
     if (!scrape.ok) return scrape;
 
-    const path = solveZip({ size: scrape.size, waypoints: scrape.waypoints }); // from games/zip/solver.js
+    const path = solveZip({ size: scrape.size, waypoints: scrape.waypoints, walls: scrape.walls });
     if (!path) {
       return { ok: false, error: 'No solution exists for the scraped board (solver returned null).' };
     }
