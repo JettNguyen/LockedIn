@@ -53,6 +53,12 @@
       lastUrl = url;
       solvedOnThisPage = false;
     }
+    // If the overlay was dismissed because its anchor element left the DOM (SPA
+    // navigation or React re-render replacing the grid), reset so we solve again
+    // once the new grid renders. This is distinct from the user clicking ✕.
+    if (window.LockedInOverlay.takeAutoDismissed()) {
+      solvedOnThisPage = false;
+    }
     if (solvedOnThisPage || window.LockedInOverlay.isActive()) return;
 
     const game = findActiveGame();

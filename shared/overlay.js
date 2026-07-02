@@ -18,6 +18,10 @@
 
 window.LockedInOverlay = (function () {
   let state = null;
+  // Set to true when the overlay is dismissed because the anchor element left the
+  // DOM (SPA navigation / React re-render), NOT when the user clicks ✕. content.js
+  // reads this via takeAutoDismissed() to know it should re-run the solver.
+  let autoDismissed = false;
 
   function isActive() {
     return state !== null;
@@ -29,6 +33,20 @@ window.LockedInOverlay = (function () {
     state.observer.disconnect();
     state.container.remove();
     state = null;
+  }
+
+  // Called internally when the anchor leaves the DOM (not a user action).
+  function dismissDueToNavigation() {
+    autoDismissed = true;
+    dismiss();
+  }
+
+  // One-shot: returns true if the overlay was auto-dismissed since the last call,
+  // then resets the flag. Used by content.js to decide whether to re-solve.
+  function takeAutoDismissed() {
+    const val = autoDismissed;
+    autoDismissed = false;
+    return val;
   }
 
   function hexToRgba(hex, alpha) {
@@ -196,7 +214,7 @@ window.LockedInOverlay = (function () {
       // been removed from the page (route change, re-render, etc.), clean
       // ourselves up instead of floating a stale overlay over new content.
       if (!document.body.contains(state.anchorEl)) {
-        dismiss();
+        dismissDueToNavigation();
         return;
       }
 
@@ -295,7 +313,7 @@ window.LockedInOverlay = (function () {
     // react immediately (rather than waiting up to one frame) if the grid
     // is removed during a SPA route change.
     const observer = new MutationObserver(() => {
-      if (!document.body.contains(anchorEl)) dismiss();
+      if (!document.body.contains(anchorEl)) dismissDueToNavigation();
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
@@ -303,5 +321,5 @@ window.LockedInOverlay = (function () {
     startTrackingLoop();
   }
 
-  return { isActive, show, dismiss };
+  return { isActive, show, dismiss, takeAutoDismissed };
 })();
