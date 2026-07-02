@@ -205,7 +205,7 @@ window.LockedInOverlay = (function () {
         applyMarkerStyle(markerEl, cellEl.getBoundingClientRect());
         if (isFilled) markerEl.classList.toggle('li-marker--confirmed', isFilled(cellEl));
       }
-      if (state.svgLine) updateSvgLine(state.svgLine);
+      for (const sl of state.svgLines) updateSvgLine(sl);
       if (state.regionsState) updateRegionsSvg(state.regionsState);
 
       state.rafId = requestAnimationFrame(tick);
@@ -226,10 +226,11 @@ window.LockedInOverlay = (function () {
    *   html?: string,              // custom markup (e.g. an inline <svg>) - takes priority over glyph
    *   isFilled?: (cellEl: Element) => boolean,
    * }>} opts.markers - one highlight per cell that still needs to be filled in.
-   * @param {{cells: Element[], color?: string}} [opts.linePath] - optional
-   *   ordered list of cell elements to connect with a continuous SVG line
-   *   (e.g. Zip path). When provided, a polyline is drawn through each cell's
-   *   center. Can be used alongside markers (or with an empty markers array).
+   * @param {{cells: Element[], color?: string, isDrawn?: Function}} [opts.linePath] - optional
+   *   single ordered path (e.g. Zip). Shorthand for linePaths with one entry.
+   * @param {Array<{cells: Element[], color?: string, isDrawn?: Function}>} [opts.linePaths] - optional
+   *   multiple ordered paths drawn as separate colored polylines (e.g. Wend).
+   *   If both linePath and linePaths are provided, linePaths takes precedence.
    * @param {Array<{
    *   color: string,
    *   cells: Array<{ cellEl: Element, edges: Array<'top'|'bottom'|'left'|'right'> }>,
@@ -240,7 +241,7 @@ window.LockedInOverlay = (function () {
    *   cell as the user places pieces; the outline fades when the whole region is
    *   complete.
    */
-  function show({ anchorEl, markers = [], linePath, regions }) {
+  function show({ anchorEl, markers = [], linePath, linePaths, regions }) {
     const container = document.createElement('div');
     container.id = 'lockedin-solver-overlay';
     document.body.appendChild(container);
@@ -258,20 +259,24 @@ window.LockedInOverlay = (function () {
       regionsState = buildRegionsSvg(container, regions);
     }
 
-    let svgLine = null;
-    if (linePath && linePath.cells && linePath.cells.length > 1) {
-      const svgEl = document.createElementNS(SVG_NS, 'svg');
-      svgEl.setAttribute('class', 'li-path-svg');
-      const polylineEl = document.createElementNS(SVG_NS, 'polyline');
-      polylineEl.setAttribute('fill', 'none');
-      polylineEl.setAttribute('stroke', linePath.color || '#f5c542');
-      polylineEl.setAttribute('stroke-linecap', 'round');
-      polylineEl.setAttribute('stroke-linejoin', 'round');
-      polylineEl.setAttribute('opacity', '0.85');
-      svgEl.appendChild(polylineEl);
-      container.appendChild(svgEl);
-      svgLine = { polylineEl, cells: linePath.cells, isDrawn: linePath.isDrawn || null };
-    }
+    // Normalize linePath (singular, for backward compat) and linePaths (array) into
+    // one list, then build a polyline SVG element for each entry.
+    const allLinePaths = linePaths || (linePath ? [linePath] : []);
+    const svgLines = allLinePaths
+      .filter((lp) => lp && lp.cells && lp.cells.length > 1)
+      .map((lp) => {
+        const svgEl = document.createElementNS(SVG_NS, 'svg');
+        svgEl.setAttribute('class', 'li-path-svg');
+        const polylineEl = document.createElementNS(SVG_NS, 'polyline');
+        polylineEl.setAttribute('fill', 'none');
+        polylineEl.setAttribute('stroke', lp.color || '#f5c542');
+        polylineEl.setAttribute('stroke-linecap', 'round');
+        polylineEl.setAttribute('stroke-linejoin', 'round');
+        polylineEl.setAttribute('opacity', '0.85');
+        svgEl.appendChild(polylineEl);
+        container.appendChild(svgEl);
+        return { polylineEl, cells: lp.cells, isDrawn: lp.isDrawn || null };
+      });
 
     const markerEls = markers.map(({ cellEl, color, glyph, html, isFilled }) => {
       const markerEl = document.createElement('div');
@@ -294,7 +299,7 @@ window.LockedInOverlay = (function () {
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
-    state = { container, dismissBtn, markers: markerEls, anchorEl, observer, rafId: null, svgLine, regionsState };
+    state = { container, dismissBtn, markers: markerEls, anchorEl, observer, rafId: null, svgLines, regionsState };
     startTrackingLoop();
   }
 
