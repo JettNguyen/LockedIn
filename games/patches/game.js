@@ -61,12 +61,15 @@
 
   function parseClueInfo(cellEl) {
     const shapeEl = cellEl.querySelector('[data-shape]');
-    const ds = shapeEl ? shapeEl.getAttribute('data-shape') : '';
+    const ds = (shapeEl ? shapeEl.getAttribute('data-shape') : '').toUpperCase();
+    // Use substring matching so renamed attribute values still resolve correctly.
+    // Default to 'rect' (generic rectangle) — never freeform, since Patches only
+    // allows squares and rectangles.
     const shape =
-      ds === 'PatchesShapeConstraint_HORIZONTAL_RECT' ? 'wide' :
-      ds === 'PatchesShapeConstraint_VERTICAL_RECT'   ? 'tall' :
-      ds === 'PatchesShapeConstraint_SQUARE'           ? 'square' :
-                                                         'freeform';
+      ds.includes('SQUARE')     ? 'square' :
+      ds.includes('HORIZONTAL') ? 'wide'   :
+      ds.includes('VERTICAL')   ? 'tall'   :
+                                  'rect';
     const numSpan = cellEl.querySelector('[data-testid^="patches-clue-number"]');
     const count = numSpan ? parseInt(numSpan.textContent.trim(), 10) : null;
     return { shape, count: Number.isFinite(count) ? count : null };
@@ -329,10 +332,9 @@
     }
 
     // Generate placements, filtered against the initial grid.
+    // All Patches shapes are rectangles or squares — always use genRectPlacements.
     const placements = clues.map(({ r, c, shape, count }, i) => {
-      const raw = shape === 'freeform'
-        ? genFreeformPlacements(n, r, c, count)
-        : genRectPlacements(n, r, c, shape, count);
+      const raw = genRectPlacements(n, r, c, shape, count);
       return raw.filter((cells) => {
         if (!cells.some(([cr, cc]) => cr === r && cc === c)) return false;
         return cells.every(([cr, cc]) => grid[cr][cc] === -1 || grid[cr][cc] === i);

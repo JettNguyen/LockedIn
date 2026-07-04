@@ -7,6 +7,10 @@
 // it has no game-specific knowledge so adding a new game never requires
 // touching this file.
 //
+// game.run() may be synchronous (most games) or async (CrossClimb, which
+// calls Chrome's built-in AI). Both are handled transparently via
+// Promise.resolve().
+//
 // Auto-solve: a MutationObserver watches for DOM changes so the overlay
 // appears automatically once the game grid finishes loading, without the user
 // needing to open the popup. The same observer resets on URL changes so
@@ -17,7 +21,7 @@
     return (window.LockedInGames || []).find((game) => game.detect());
   }
 
-  function solveAndRender() {
+  async function solveAndRender() {
     if (window.LockedInOverlay.isActive()) {
       return { ok: false, error: 'A solution overlay is already showing. Dismiss it (✕) before solving again.' };
     }
@@ -27,17 +31,17 @@
       return { ok: false, error: "This LinkedIn game isn't supported yet." };
     }
 
-    return game.run();
+    return await Promise.resolve(game.run());
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type !== 'LOCKEDIN_SOLVE') return;
 
-    try {
-      sendResponse(solveAndRender());
-    } catch (err) {
-      sendResponse({ ok: false, error: err && err.message ? err.message : 'Unknown error.' });
-    }
+    solveAndRender()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : 'Unknown error.' }));
+
+    return true; // keep the message channel open for the async response
   });
 
   // Auto-solve logic. Fires on every DOM mutation (covers the game grid
@@ -46,8 +50,9 @@
   // once the URL changes it resets so the next game gets solved fresh.
   let lastUrl = location.href;
   let solvedOnThisPage = false;
+  let autoSolving = false; // prevents concurrent auto-solve calls
 
-  function tryAutoSolve() {
+  async function tryAutoSolve() {
     const url = location.href;
     if (url !== lastUrl) {
       lastUrl = url;
@@ -59,16 +64,19 @@
     if (window.LockedInOverlay.takeAutoDismissed()) {
       solvedOnThisPage = false;
     }
-    if (solvedOnThisPage || window.LockedInOverlay.isActive()) return;
+    if (solvedOnThisPage || window.LockedInOverlay.isActive() || autoSolving) return;
 
     const game = findActiveGame();
     if (!game) return;
 
+    autoSolving = true;
     try {
-      const result = game.run();
+      const result = await Promise.resolve(game.run());
       if (result && result.ok) solvedOnThisPage = true;
     } catch (_) {
       // Grid not ready yet - the observer will retry on the next DOM change.
+    } finally {
+      autoSolving = false;
     }
   }
 

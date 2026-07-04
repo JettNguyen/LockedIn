@@ -19,6 +19,7 @@ out of the overlay so you always know what's left.
 | **Zip** | Green line tracing the full path from start to finish |
 | **Patches** | Colored region outlines showing which piece covers which cells |
 | **Wend** | White path line per word with a filled start square and hollow end square |
+| **CrossClimb** | Numbered position badges on each row showing the correct drag order |
 
 ## Usage
 
@@ -79,6 +80,8 @@ games/
     game.js             Constraint-propagation + backtracking solver and scraper combined
   wend/
     game.js             Reads word order from LinkedIn's embedded position data and renders paths
+  crossclimb/
+    game.js             Finds a valid word-ladder ordering and shows numbered drag-position markers
 ```
 
 ## Adding a new game
