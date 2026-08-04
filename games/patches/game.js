@@ -347,7 +347,7 @@
   // ── Region building ─────────────────────────────────────────────────────
 
   function buildRegions(n, clues, solution, cellElements) {
-    return clues.map(({ color }, i) => {
+    return clues.map(({ color, r: clueR, c: clueC }, i) => {
       const rawCells = [];
       for (let r = 0; r < n; r++)
         for (let c = 0; c < n; c++)
@@ -360,20 +360,26 @@
         if (!cellSet.has(`${r + 1},${c}`)) edges.push('bottom');
         if (!cellSet.has(`${r},${c - 1}`)) edges.push('left');
         if (!cellSet.has(`${r},${c + 1}`)) edges.push('right');
-        return { cellEl: cellElements[r][c], edges };
+        // The clue cell is a given: LinkedIn colors it in from the start and
+        // the user never places it. Flagging it lets the overlay leave it
+        // unhatched and, crucially, not count it when deciding whether the
+        // region is complete — a clue cell can never become "filled" by the
+        // user, so counting it kept every finished region outlined forever.
+        return {
+          cellEl: cellElements[r][c],
+          edges,
+          isClue: r === clueR && c === clueC,
+        };
       });
 
       return {
         color,
         cells,
-        // Clue cells have the region's CSS color variable set from the start,
-        // so checking the variable alone would make them appear "filled"
-        // immediately — their fill overlay would hide and the region border
-        // would look open at the clue cell. Exclude clue cells (those with a
-        // [data-shape] child) from the "filled" check so their tinted fill
-        // always shows alongside every other cell in the region.
+        // Only ever asked about non-clue cells (the overlay skips clue cells),
+        // so this is a straight "has the user painted this cell in the region's
+        // color" check: LinkedIn writes that color into a CSS custom property
+        // on the cell when a piece covers it.
         isCellFilled: (cellEl) => {
-          if (cellEl.querySelector('[data-shape]')) return false;
           for (const prop of cellEl.style) {
             if (prop.startsWith('--') &&
                 cellEl.style.getPropertyValue(prop).trim() === color)

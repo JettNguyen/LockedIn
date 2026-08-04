@@ -81,6 +81,10 @@ window.LockedInOverlay = (function () {
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
+  // Ids have to be unique across every overlay this page ever draws, so the
+  // counter deliberately lives outside show().
+  let hatchSeq = 0;
+
   function edgeCoordsOf(rect, side) {
     switch (side) {
       case 'top':    return { x1: rect.left,  y1: rect.top,    x2: rect.right, y2: rect.top    };
@@ -90,32 +94,72 @@ window.LockedInOverlay = (function () {
     }
   }
 
+  // Diagonal stripes in the region's own color, used instead of a flat wash.
+  // A flat tint is the same hue the page itself paints a placed cell with, so a
+  // board where nothing has been placed yet still reads as finished and you
+  // can't tell your own work from the suggestion. Stripes can only mean "the
+  // overlay is proposing this"; solid can only mean "you placed this".
+  //
+  // Neighbouring regions alternate stripe direction so two similar colors
+  // sitting side by side still separate visually.
+  function buildHatchFill(defsEl, color, index) {
+    const id = `lockedin-hatch-${++hatchSeq}`;
+    const size = 8;
+
+    const pattern = document.createElementNS(SVG_NS, 'pattern');
+    pattern.setAttribute('id', id);
+    pattern.setAttribute('width', size);
+    pattern.setAttribute('height', size);
+    pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+    pattern.setAttribute('patternTransform', `rotate(${index % 2 === 0 ? 45 : -45})`);
+
+    const background = document.createElementNS(SVG_NS, 'rect');
+    background.setAttribute('width', size);
+    background.setAttribute('height', size);
+    background.setAttribute('fill', hexToRgba(color, 0.12));
+    pattern.appendChild(background);
+
+    const stripe = document.createElementNS(SVG_NS, 'rect');
+    stripe.setAttribute('width', size / 2);
+    stripe.setAttribute('height', size);
+    stripe.setAttribute('fill', hexToRgba(color, 0.5));
+    pattern.appendChild(stripe);
+
+    defsEl.appendChild(pattern);
+    return `url(#${id})`;
+  }
+
   // Build SVG elements for every region up front. Each cell in a region gets:
-  //   • a <rect> for the translucent fill (hidden when the user fills that cell)
+  //   • a <rect> of hatching (hidden once the user fills that cell) — except
+  //     clue cells, which the page already colors in and the user never places,
+  //     so hatching them would just be noise sitting on top of a finished cell
   //   • one <line> per boundary edge (sides facing a different region or the grid
   //     border) — internal edges between cells of the same region are never drawn,
   //     giving the region a single connected outline rather than a grid of boxes.
-  // The outline lines stay visible until ALL cells in the region are filled; at
-  // that point the entire group fades out at once.
+  // The outline stays up until every *placeable* cell in the region is filled,
+  // then the whole group fades at once.
   function buildRegionsSvg(container, regions) {
     const svgEl = document.createElementNS(SVG_NS, 'svg');
     svgEl.setAttribute('class', 'li-path-svg');
+    const defsEl = document.createElementNS(SVG_NS, 'defs');
+    svgEl.appendChild(defsEl);
     container.appendChild(svgEl);
 
-    const regionItems = regions.map(({ color, cells, isCellFilled }) => {
-      const fillColor = hexToRgba(color, 0.35);
+    const regionItems = regions.map(({ color, cells, isCellFilled }, regionIdx) => {
+      const hatchFill = buildHatchFill(defsEl, color, regionIdx);
 
-      const cellItems = cells.map(({ cellEl, edges }) => {
-        const fillRect = document.createElementNS(SVG_NS, 'rect');
-        fillRect.setAttribute('fill', fillColor);
-        fillRect.setAttribute('stroke', 'none');
-        svgEl.appendChild(fillRect);
+      const cellItems = cells.map(({ cellEl, edges, isClue }) => {
+        let fillRect = null;
+        if (!isClue) {
+          fillRect = document.createElementNS(SVG_NS, 'rect');
+          fillRect.setAttribute('fill', hatchFill);
+          fillRect.setAttribute('stroke', 'none');
+          svgEl.appendChild(fillRect);
+        }
 
         const edgeLines = edges.map((side) => {
           const line = document.createElementNS(SVG_NS, 'line');
           line.setAttribute('stroke', color);
-          // butt linecap: lines end exactly at cell corners with no overshoot,
-          // so adjacent boundary lines meet cleanly at shared corners.
           // square linecap extends each segment by stroke-width/2 past its
           // endpoints, closing corners cleanly and bridging any sub-pixel
           // gaps between adjacent cells' bounding rects.
@@ -124,7 +168,7 @@ window.LockedInOverlay = (function () {
           return { side, line };
         });
 
-        return { cellEl, fillRect, edgeLines };
+        return { cellEl, fillRect, edgeLines, isClue: !!isClue };
       });
 
       return { cellItems, isCellFilled };
@@ -135,9 +179,12 @@ window.LockedInOverlay = (function () {
 
   function updateRegionsSvg(regionsState) {
     for (const { cellItems, isCellFilled } of regionsState.regionItems) {
-      // Check if every cell in this region has been placed by the user.
+      // Has the user placed every cell they actually have to place? Clue cells
+      // are the page's own givens, so counting them here would make a finished
+      // region look unfinished forever.
       let allFilled = true;
-      for (const { cellEl } of cellItems) {
+      for (const { cellEl, isClue } of cellItems) {
+        if (isClue) continue;
         if (!isCellFilled(cellEl)) { allFilled = false; break; }
       }
 
@@ -145,19 +192,21 @@ window.LockedInOverlay = (function () {
       let strokeWidth = 2.5;
       if (cellItems.length > 0) {
         const r0 = cellItems[0].cellEl.getBoundingClientRect();
-        strokeWidth = Math.max(1.5, Math.min(r0.width, r0.height) * 0.06);
+        strokeWidth = Math.max(1.5, Math.min(r0.width, r0.height) * 0.07);
       }
 
       for (const { cellEl, fillRect, edgeLines } of cellItems) {
-        const filled = isCellFilled(cellEl);
         const rect = cellEl.getBoundingClientRect();
 
-        // Per-cell fill fades immediately when that cell is placed.
-        fillRect.setAttribute('x', rect.left);
-        fillRect.setAttribute('y', rect.top);
-        fillRect.setAttribute('width', rect.width);
-        fillRect.setAttribute('height', rect.height);
-        fillRect.setAttribute('opacity', filled ? 0 : 1);
+        // Per-cell hatching clears the moment that cell is placed, so what's
+        // left striped is exactly what's left to do.
+        if (fillRect) {
+          fillRect.setAttribute('x', rect.left);
+          fillRect.setAttribute('y', rect.top);
+          fillRect.setAttribute('width', rect.width);
+          fillRect.setAttribute('height', rect.height);
+          fillRect.setAttribute('opacity', isCellFilled(cellEl) ? 0 : 1);
+        }
 
         // Outline lines wait until the entire region is solved, then fade.
         for (const { side, line } of edgeLines) {
@@ -251,13 +300,17 @@ window.LockedInOverlay = (function () {
    *   If both linePath and linePaths are provided, linePaths takes precedence.
    * @param {Array<{
    *   color: string,
-   *   cells: Array<{ cellEl: Element, edges: Array<'top'|'bottom'|'left'|'right'> }>,
+   *   cells: Array<{
+   *     cellEl: Element,
+   *     edges: Array<'top'|'bottom'|'left'|'right'>,
+   *     isClue?: boolean,        // a given the page already fills in for the user
+   *   }>,
    *   isCellFilled: (cellEl: Element) => boolean,
    * }>} [opts.regions] - optional per-region data for drawing connected region
-   *   outlines (e.g. Patches). Each region renders as a translucent fill on all
-   *   its cells plus a stroke only on the outer boundary edges. Fill fades per-
-   *   cell as the user places pieces; the outline fades when the whole region is
-   *   complete.
+   *   outlines (e.g. Patches). Each region renders as diagonal hatching on its
+   *   cells plus a stroke only on the outer boundary edges. Hatching clears
+   *   per-cell as the user places pieces; the outline fades once every non-clue
+   *   cell is placed. Clue cells are never hatched and never gate completion.
    */
   function show({ anchorEl, markers = [], linePath, linePaths, regions }) {
     const container = document.createElement('div');

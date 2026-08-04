@@ -17,7 +17,7 @@ out of the overlay so you always know what's left.
 | **Tango** | Sun/moon icon on each cell that needs a symbol |
 | **Mini Sudoku** | Digit on each empty cell |
 | **Zip** | Green line tracing the full path from start to finish |
-| **Patches** | Colored region outlines showing which piece covers which cells |
+| **Patches** | Colored region outlines, with the cells you haven't placed yet hatched |
 | **Wend** | White path line per word with a filled start square and hollow end square |
 | **CrossClimb** | Numbered position badges on each row showing the correct drag order |
 
@@ -42,7 +42,11 @@ Every game follows the same four-step shape:
 2. **Scrape** — each game reads the puzzle from the live page using stable
    attributes (`data-testid`, `aria-label`, `data-cell-idx`, inline CSS custom
    properties, etc.) rather than LinkedIn's hashed/minified class names, so it
-   keeps working across LinkedIn deploys.
+   keeps working across LinkedIn deploys. Where there's no stable attribute at
+   all — Zip's walls — the board is measured instead: a wall is identified by
+   being a thin bar lying along one edge of its cell. Run
+   `LockedInDebug.zip()` in the console on the Zip page to print the scraped
+   board and check the walls against what's on screen.
 
 3. **Solve** — a pure function (no DOM access) computes the answer from the
    scraped data. Deterministic games (Queens, Tango, Sudoku, Zip, Patches) are
@@ -53,6 +57,19 @@ Every game follows the same four-step shape:
    page. The puzzle's own DOM is never touched. The overlay tracks the grid's
    position every frame (so it stays aligned on scroll/resize) and fades out
    individual pieces as you fill them in.
+
+   Suggestions are always drawn in a form the page itself never uses — Patches
+   regions are hatched rather than washed with a flat tint, because a flat tint
+   is exactly what LinkedIn paints a *placed* cell with, and an overlay you
+   can't tell apart from your own progress makes an untouched board look
+   finished.
+
+The auto-solve in `content.js` runs on a heartbeat, not purely on DOM
+mutations. LinkedIn regularly lands its final render — or swaps the grid out
+from under a just-drawn overlay — in the last mutation batch a page ever emits,
+leaving a mutation-only trigger with nothing left to fire on. Mutations are
+still used, but only to retry sooner; the heartbeat is what guarantees a retry
+at all.
 
 ## Project structure
 

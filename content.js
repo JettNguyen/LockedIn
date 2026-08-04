@@ -11,19 +11,42 @@
 // calls Chrome's built-in AI). Both are handled transparently via
 // Promise.resolve().
 //
-// Auto-solve: a MutationObserver watches for DOM changes so the overlay
-// appears automatically once the game grid finishes loading, without the user
-// needing to open the popup. The same observer resets on URL changes so
-// navigating between game pages (LinkedIn is a SPA) re-triggers the solve.
+// Auto-solve: driven by a steady heartbeat, with DOM mutations only used as a
+// hint that it's worth trying again *now*. A mutation-only trigger (what this
+// used to be) has a hole you fall into constantly on LinkedIn: React commits
+// the finished grid - or swaps the grid out from under a just-drawn overlay -
+// in the very last mutation batch the page ever emits, and then there is
+// nothing left to fire on. That's why Patches needed a manual Solve and Mini
+// Sudoku needed a hard refresh. The heartbeat always gets another chance.
 
 (function () {
+  // Heartbeat period. Cheap when there's nothing to do: a URL compare and two
+  // boolean checks.
+  const TICK_MS = 300;
+  // How long the DOM has to stay quiet before we scrape, so we read a finished
+  // render instead of a half-committed one.
+  const SETTLE_MS = 150;
+  // Backoff bounds for repeated failures (grid not ready, unsolvable scrape).
+  // The first few failures don't back off at all - they're almost always just
+  // "the board hasn't finished rendering", and that resolves in well under a
+  // second, so there's no reason to make you wait out a doubling delay for it.
+  const RETRY_MIN_MS = 400;
+  const RETRY_MAX_MS = 5000;
+  const RETRY_GRACE_ATTEMPTS = 3;
+
   function findActiveGame() {
     return (window.LockedInGames || []).find((game) => game.detect());
   }
 
-  async function solveAndRender() {
+  async function solveAndRender({ force = false } = {}) {
     if (window.LockedInOverlay.isActive()) {
-      return { ok: false, error: 'A solution overlay is already showing. Dismiss it (✕) before solving again.' };
+      // Manual solves replace whatever is on screen - if you pressed Solve you
+      // want a solution, not a complaint that you already have one. Auto-solves
+      // never force, so they can't stomp an overlay you're using.
+      if (!force) {
+        return { ok: false, error: 'A solution overlay is already showing. Dismiss it (✕) before solving again.' };
+      }
+      window.LockedInOverlay.dismiss();
     }
 
     const game = findActiveGame();
@@ -34,56 +57,103 @@
     return await Promise.resolve(game.run());
   }
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== 'LOCKEDIN_SOLVE') return;
+  // --- Auto-solve state ---------------------------------------------------
 
-    solveAndRender()
-      .then(sendResponse)
-      .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : 'Unknown error.' }));
-
-    return true; // keep the message channel open for the async response
-  });
-
-  // Auto-solve logic. Fires on every DOM mutation (covers the game grid
-  // appearing after LinkedIn's async rendering) and on URL changes (SPA
-  // navigation to a new game page). Once the overlay is up it stops trying;
-  // once the URL changes it resets so the next game gets solved fresh.
   let lastUrl = location.href;
   let solvedOnThisPage = false;
   let autoSolving = false; // prevents concurrent auto-solve calls
+  let consecutiveFailures = 0;
+  let nextAttemptAt = 0; // epoch ms; don't attempt again before this
+  let lastAttemptAt = 0; // epoch ms of the last attempt
+  let domTouchedAt = 0; // epoch ms of the most recent DOM mutation
 
-  async function tryAutoSolve() {
-    const url = location.href;
-    if (url !== lastUrl) {
-      lastUrl = url;
-      solvedOnThisPage = false;
+  function markSolved() {
+    solvedOnThisPage = true;
+    consecutiveFailures = 0;
+  }
+
+  // Called when we're looking at a board we haven't solved yet: a new URL, or
+  // the overlay dropping itself because its grid was replaced.
+  function resetForFreshBoard() {
+    solvedOnThisPage = false;
+    consecutiveFailures = 0;
+    nextAttemptAt = 0;
+  }
+
+  function noteFailure() {
+    // A failure is nearly always "the grid hasn't finished rendering", so we
+    // keep trying - but with backoff, so a page we genuinely can't solve
+    // doesn't re-run an expensive solver three times a second forever. Any DOM
+    // change short-circuits the backoff (see the observer below).
+    consecutiveFailures++;
+    const doublings = Math.max(0, consecutiveFailures - RETRY_GRACE_ATTEMPTS);
+    nextAttemptAt = Date.now() + Math.min(RETRY_MIN_MS * 2 ** doublings, RETRY_MAX_MS);
+  }
+
+  async function tick() {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      resetForFreshBoard();
     }
-    // If the overlay was dismissed because its anchor element left the DOM (SPA
-    // navigation or React re-render replacing the grid), reset so we solve again
-    // once the new grid renders. This is distinct from the user clicking ✕.
-    if (window.LockedInOverlay.takeAutoDismissed()) {
-      solvedOnThisPage = false;
+
+    // The overlay dismissed itself because the grid it was drawn over left the
+    // DOM (SPA navigation, React re-mounting the board). Solve the new one.
+    // Distinct from the user clicking ✕, which is meant to stay dismissed.
+    if (window.LockedInOverlay.takeAutoDismissed()) resetForFreshBoard();
+
+    if (autoSolving || solvedOnThisPage || window.LockedInOverlay.isActive()) return;
+
+    const now = Date.now();
+    if (domTouchedAt > lastAttemptAt) {
+      // The page changed since we last looked: retry as soon as it settles,
+      // ignoring whatever backoff the previous failure set.
+      if (now - domTouchedAt < SETTLE_MS) return;
+    } else if (now < nextAttemptAt) {
+      return;
     }
-    if (solvedOnThisPage || window.LockedInOverlay.isActive() || autoSolving) return;
 
     const game = findActiveGame();
     if (!game) return;
 
     autoSolving = true;
+    lastAttemptAt = now;
     try {
       const result = await Promise.resolve(game.run());
-      if (result && result.ok) solvedOnThisPage = true;
+      if (result && result.ok) markSolved();
+      else noteFailure();
     } catch (_) {
-      // Grid not ready yet - the observer will retry on the next DOM change.
+      noteFailure();
     } finally {
       autoSolving = false;
     }
   }
 
-  new MutationObserver(tryAutoSolve).observe(document.body, {
-    childList: true,
-    subtree: true,
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || message.type !== 'LOCKEDIN_SOLVE') return;
+
+    solveAndRender({ force: true })
+      .then((result) => {
+        // Record the manual solve so the heartbeat treats this board as handled
+        // instead of racing to draw a second overlay over it. A failed one is
+        // the opposite case: forcing already dismissed whatever was showing, so
+        // hand the board back to the heartbeat rather than leaving you staring
+        // at a bare grid until you navigate away.
+        if (result && result.ok) markSolved();
+        else resetForFreshBoard();
+        sendResponse(result);
+      })
+      .catch((err) => {
+        resetForFreshBoard();
+        sendResponse({ ok: false, error: err && err.message ? err.message : 'Unknown error.' });
+      });
+
+    return true; // keep the message channel open for the async response
   });
 
-  tryAutoSolve(); // also try immediately if the page is already loaded
+  new MutationObserver(() => {
+    domTouchedAt = Date.now();
+  }).observe(document.body, { childList: true, subtree: true });
+
+  setInterval(tick, TICK_MS);
+  tick(); // don't wait a full tick if the page is already loaded
 })();

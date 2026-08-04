@@ -26,6 +26,13 @@
 //
 // URL confirmed as https://www.linkedin.com/games/mini-sudoku/ - detect()
 // also accepts a bare /games/sudoku path since the regex cost nothing extra.
+//
+// LOADING: the cells of this grid render before their digits do, so a scrape
+// that lands in that gap sees a legal board with too few givens - and a solver
+// handed too few givens returns a perfectly valid Sudoku that has nothing to do
+// with today's puzzle. run() therefore asks for two solutions and treats "more
+// than one" as "still loading", which is a scrape-order-independent readiness
+// test rather than a guess at how long LinkedIn takes to paint.
 
 (function () {
   function findGrid() {
@@ -129,6 +136,16 @@
       }
     }
 
+    // deriveBoxOf() walks every position, so a hole left by a skipped or
+    // repeated data-cell-idx would throw there instead of failing cleanly here.
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (!cellElements[r][c]) {
+          return { ok: false, error: `The grid is still loading — no cell rendered at row ${r + 1}, column ${c + 1}.` };
+        }
+      }
+    }
+
     const boxOf = deriveBoxOf(cellElements, rows, cols);
     return { ok: true, size: rows, given, boxOf, cellElements };
   }
@@ -148,10 +165,27 @@
     const scrape = scrapeBoard(gridRoot);
     if (!scrape.ok) return scrape;
 
-    const solution = solveSudoku({ size: scrape.size, boxOf: scrape.boxOf, given: scrape.given }); // from games/sudoku/solver.js
-    if (!solution) {
+    // Ask for two solutions, not one. The cells of this grid render a beat
+    // before their digits do, so a scrape that lands in that gap sees a valid
+    // but under-constrained board - and a solver handed too few givens happily
+    // returns *a* Sudoku, just not this puzzle's. More than one solution means
+    // we're looking at a half-rendered board, so fail (the auto-solver will
+    // retry once it settles) rather than overlay confidently wrong digits.
+    // from games/sudoku/solver.js
+    const solutions = solveSudokuSolutions(
+      { size: scrape.size, boxOf: scrape.boxOf, given: scrape.given },
+      2
+    );
+    if (solutions.length === 0) {
       return { ok: false, error: 'No solution exists for the scraped board (solver returned null).' };
     }
+    if (solutions.length > 1) {
+      return {
+        ok: false,
+        error: `The grid is still loading — only ${scrape.given.size} given digit(s) have rendered so far, which leaves this board with more than one solution.`,
+      };
+    }
+    const solution = solutions[0];
 
     const markers = [];
     for (let r = 0; r < scrape.size; r++) {
