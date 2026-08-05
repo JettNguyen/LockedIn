@@ -346,6 +346,20 @@
 
   // ── Region building ─────────────────────────────────────────────────────
 
+  // #ABC, #aabbcc and #aabbccff all name the same color but none are string-
+  // equal, so reduce every spelling to lowercase 6-digit hex before comparing.
+  // Anything that isn't hex is passed through lowercased.
+  function normalizeColor(value) {
+    const text = String(value == null ? '' : value).trim().toLowerCase();
+    const match = text.match(/^#([0-9a-f]{3,8})$/);
+    if (!match) return text;
+    let digits = match[1];
+    if (digits.length === 3 || digits.length === 4) {
+      digits = digits.split('').map((ch) => ch + ch).join('');
+    }
+    return `#${digits.slice(0, 6)}`; // drop any alpha channel
+  }
+
   function buildRegions(n, clues, solution, cellElements) {
     return clues.map(({ color, r: clueR, c: clueC }, i) => {
       const rawCells = [];
@@ -372,17 +386,32 @@
         };
       });
 
+      // "Cell (r,c) is in the region whose clue sits at row R, column C" - the
+      // same aria-label LinkedIn uses for region membership when scraping. The
+      // \b stops "column 1" from also matching "column 10".
+      const membershipLabel = new RegExp(
+        `in region with clue at row ${clueR + 1}, column ${clueC + 1}\\b`, 'i'
+      );
+      const targetColor = normalizeColor(color);
+
       return {
         color,
         cells,
         // Only ever asked about non-clue cells (the overlay skips clue cells),
-        // so this is a straight "has the user painted this cell in the region's
-        // color" check: LinkedIn writes that color into a CSS custom property
-        // on the cell when a piece covers it.
+        // so: has the user covered this cell with the region's piece yet?
+        //
+        // Two independent signals, because relying on the color alone is what
+        // kept finished shapes on screen. LinkedIn writes the region color into
+        // a CSS custom property on a covered cell, but it doesn't guarantee the
+        // exact spelling it used on the clue cell we read the color off -
+        // #ABC vs #aabbcc vs #aabbccff all name the same color and none of them
+        // are string-equal. So compare normalized, and take the aria-label as
+        // proof on its own.
         isCellFilled: (cellEl) => {
+          if (membershipLabel.test(cellEl.getAttribute('aria-label') || '')) return true;
           for (const prop of cellEl.style) {
             if (prop.startsWith('--') &&
-                cellEl.style.getPropertyValue(prop).trim() === color)
+                normalizeColor(cellEl.style.getPropertyValue(prop)) === targetColor)
               return true;
           }
           return false;

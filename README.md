@@ -50,8 +50,12 @@ Every game follows the same four-step shape:
 
 3. **Solve** — a pure function (no DOM access) computes the answer from the
    scraped data. Deterministic games (Queens, Tango, Sudoku, Zip, Patches) are
-   solved algorithmically. Non-deterministic games where LinkedIn embeds the
-   answer in the DOM (Wend) read it directly from inline style properties.
+   solved algorithmically. Wend tries to read the answer out of the DOM first
+   (the board numbers each letter with its position in its word), and only if
+   that fails does it search for a partition of the grid into paths of the
+   right lengths — checking each path against a word list, because there are
+   vast numbers of partitions with the right lengths and all but one of them
+   spell nothing. `LockedInDebug.wend()` prints the words it landed on.
 
 4. **Overlay** — `shared/overlay.js` draws a fixed-position layer over the
    page. The puzzle's own DOM is never touched. The overlay tracks the grid's
@@ -71,10 +75,19 @@ leaving a mutation-only trigger with nothing left to fire on. Mutations are
 still used, but only to retry sooner; the heartbeat is what guarantees a retry
 at all.
 
+The content script matches **all** of `linkedin.com`, not just `/games/*`, even
+though it does nothing anywhere else. Chrome only injects a content script on a
+real document load, so matching `/games/*` meant that reaching a puzzle the
+normal way — clicking through from the feed, which LinkedIn routes client-side
+— left no script in the page at all, and the overlay only ever appeared after a
+hard refresh or a manual **Solve** (which force-injects). Matching every
+LinkedIn page means the script is already loaded when the SPA routes into a
+game, and the heartbeat notices the URL change.
+
 ## Project structure
 
 ```
-manifest.json           Manifest V3, scoped to linkedin.com/games/*
+manifest.json           Manifest V3, matches linkedin.com/* (see note above)
 content.js              Thin dispatcher: detects the active game, calls its run()
 popup.html / popup.js   Extension popup (Solve button + status message)
 overlay.css             Shared styles (marker highlight, breathing animation, fade-on-complete)
@@ -96,6 +109,7 @@ games/
   patches/
     game.js             Constraint-propagation + backtracking solver and scraper combined
   wend/
+    words.txt           Word list (Webster's Second, public domain) used to reject non-words
     game.js             Reads word order from LinkedIn's embedded position data and renders paths
   crossclimb/
     game.js             Finds a valid word-ladder ordering and shows numbered drag-position markers

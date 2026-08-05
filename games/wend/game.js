@@ -154,7 +154,6 @@
     const same = sameGroup || ((a, b) => a.colorKey === b.colorKey);
     const path = [startCell];
     const visited = new Set([startCell.idx]);
-    const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
     let cur = startCell;
     while (true) {
       const r = Math.floor(cur.idx / n), c = cur.idx % n;
@@ -199,17 +198,118 @@
     return map;
   }
 
+  // ─── Dictionary (lazy, optional) ──────────────────────────────────────────
+  //
+  // Partitioning the board into connected paths of the right *lengths* has
+  // enormous numbers of solutions, and all but one of them spell gibberish -
+  // which is exactly what the length-only solver below used to hand back. The
+  // word list turns "any partition that fits" into "the partition where every
+  // path is a word", which is very nearly always unique.
+  //
+  // games/wend/words.txt is Webster's Second (/usr/share/dict/words); its 1934
+  // copyright has lapsed. It's fetched once, only on the Wend page, and every
+  // caller treats a missing dictionary as "skip that constraint" - so a failed
+  // load degrades to the old behaviour instead of breaking the solve.
+
+  let dictionaryPromise = null;
+
+  function loadDictionary() {
+    if (dictionaryPromise) return dictionaryPromise;
+    dictionaryPromise = (async () => {
+      try {
+        const res = await fetch(chrome.runtime.getURL('games/wend/words.txt'));
+        if (!res.ok) return null;
+        const words = (await res.text()).split('\n');
+        const set = new Set();
+        for (const w of words) if (w) set.add(w);
+        return set.size ? set : null;
+      } catch (_) {
+        return null;
+      }
+    })();
+    return dictionaryPromise;
+  }
+
+  // ─── Position-based reconstruction ────────────────────────────────────────
+  //
+  // The board does its own bookkeeping: each letter cell carries its position
+  // within its word, and each word's first cell carries a start indicator. When
+  // both are present this reads the answer off the page rather than inferring
+  // it, so it runs before every heuristic below. Every step is verified (chain
+  // of consecutive positions, orthogonally adjacent, covering each cell exactly
+  // once, lengths matching the word list) because getWordPosition() picks the
+  // first numeric CSS custom property it finds and that may well be something
+  // else entirely - in which case a check fails and we fall through.
+
+  function solveByPositions(cells, cellsByIdx, n, expectedLengths) {
+    if (!expectedLengths.length) return null;
+
+    const starts = cells.filter((c) => c.isStart);
+    if (starts.length !== expectedLengths.length) return null;
+    if (!cells.every((c) => c.position > 0)) return null;
+    if (!starts.every((c) => c.position === 1)) return null;
+
+    const used = new Set();
+    const words = [];
+
+    for (const start of starts) {
+      const path = [start];
+      if (used.has(start.idx)) return null;
+      used.add(start.idx);
+
+      let cur = start;
+      for (;;) {
+        const r = Math.floor(cur.idx / n), c = cur.idx % n;
+        let next = null;
+        for (const [dr, dc] of DIRS) {
+          const nr = r + dr, nc = c + dc;
+          if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
+          const nb = cellsByIdx.get(nr * n + nc);
+          if (!nb || used.has(nb.idx) || nb.position !== cur.position + 1) continue;
+          if (next) return null; // ambiguous continuation - don't guess
+          next = nb;
+        }
+        if (!next) break;
+        used.add(next.idx);
+        path.push(next);
+        cur = next;
+      }
+      words.push(path);
+    }
+
+    if (used.size !== cells.length) return null;
+    const got = words.map((w) => w.length).sort((a, b) => a - b);
+    const want = [...expectedLengths].sort((a, b) => a - b);
+    if (JSON.stringify(got) !== JSON.stringify(want)) return null;
+
+    return words;
+  }
+
   // ─── Backtracking path solver ─────────────────────────────────────────────
   //
   // Partitions all letter cells into connected orthogonal paths whose lengths
   // exactly match wordLengths. Works regardless of colour information.
+  //
+  // opts.startIdxs   - Set of cell indices the board marks as word starts. A
+  //                    path must begin on one and may not pass through another.
+  // opts.dictionary  - Set of real words; a completed path must spell one,
+  //                    forwards or backwards (an unmarked path can be walked
+  //                    from either end, so the match decides its direction).
+  // opts.budget      - max path extensions before giving up, so a board these
+  //                    constraints don't fit can't wedge the page.
 
   const PALETTE = ['#E53935', '#43A047', '#1E88E5', '#FB8C00', '#8E24AA', '#00ACC1', '#F4511E', '#6D4C41'];
+  const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  const DEFAULT_BUDGET = 2000000;
 
-  function solveByWordLengths(allCells, cellsByIdx, n, wordLengths) {
+  function solveByWordLengths(allCells, cellsByIdx, n, wordLengths, opts = {}) {
     if (!wordLengths.length) return null;
 
-    const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    const { startIdxs = null, dictionary = null, budget = DEFAULT_BUDGET } = opts;
+    // Only trust the start markers if there's exactly one per word; a partial
+    // set would rule out the real answer.
+    const starts = startIdxs && startIdxs.size === wordLengths.length ? startIdxs : null;
+    let steps = 0;
 
     function availNeighbors(idx, avail) {
       const r = Math.floor(idx / n), c = idx % n;
@@ -221,6 +321,15 @@
         if (avail.has(ni)) out.push(ni);
       }
       return out;
+    }
+
+    // Returns the path oriented so it reads as a word, or null if it isn't one.
+    function orientAsWord(path) {
+      if (!dictionary) return path;
+      const letters = path.map((idx) => cellsByIdx.get(idx).letter.toLowerCase());
+      if (dictionary.has(letters.join(''))) return path;
+      if (dictionary.has(letters.reverse().join(''))) return [...path].reverse();
+      return null;
     }
 
     // Sort longest word first — longest paths have the fewest valid start
@@ -236,23 +345,28 @@
 
       // Prefer starting from cells with fewest available neighbours
       // (likely path endpoints — degree-1 cells MUST be path endpoints).
-      const candidates = [...avail].sort(
+      let candidates = [...avail].sort(
         (a, b) => availNeighbors(a, avail).length - availNeighbors(b, avail).length
       );
+      if (starts) candidates = candidates.filter((idx) => starts.has(idx));
 
       for (const startIdx of candidates) {
         const path = [startIdx];
         avail.delete(startIdx);
 
         function extend() {
+          if (++steps > budget) throw new RangeError('wend-budget');
           if (path.length === targetLen) {
-            results.push([...path]);
+            const oriented = orientAsWord(path);
+            if (!oriented) return false;
+            results.push(oriented);
             if (solve(depthIdx + 1)) return true;
             results.pop();
             return false;
           }
           const last = path[path.length - 1];
           for (const next of availNeighbors(last, avail)) {
+            if (starts && starts.has(next)) continue; // a start cell only ever begins a word
             path.push(next);
             avail.delete(next);
             if (extend()) return true;
@@ -269,13 +383,18 @@
       return false;
     }
 
-    if (!solve(0)) return null;
+    try {
+      if (!solve(0)) return null;
+    } catch (err) {
+      if (err instanceof RangeError && err.message === 'wend-budget') return null;
+      throw err;
+    }
     return results.map((idxList) => idxList.map((idx) => cellsByIdx.get(idx)));
   }
 
   // ─── Board scraping ───────────────────────────────────────────────────────
 
-  function scrapeBoard(gridRoot) {
+  function scrapeBoard(gridRoot, dictionary) {
     let cellEls = Array.from(gridRoot.children).filter(
       (el) => /^cell-\d+$/.test(el.dataset.testid || '')
     );
@@ -313,8 +432,17 @@
     const expectedLengths = getExpectedWordLengths();
     let words = null;
 
+    // ── Strategy 0: the board's own position numbering ───────────────────
+    // Exact when it applies, so it goes first.
+    {
+      const byPosition = solveByPositions(cells, cellsByIdx, n, expectedLengths);
+      if (byPosition) {
+        words = byPosition.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
+      }
+    }
+
     // ── Strategy 1: colour grouping ──────────────────────────────────────
-    if (cells.some((c) => c.colorKey !== null)) {
+    if (!words && cells.some((c) => c.colorKey !== null)) {
       const groups = new Map();
       for (const cell of cells) {
         const key = cell.colorKey ?? '__none__';
@@ -388,10 +516,25 @@
     }
 
     // ── Strategy 2: backtracking solver ──────────────────────────────────
+    // Length alone leaves a huge number of valid partitions and picks an
+    // arbitrary one, which is how this ended up drawing paths that spelled
+    // nothing. So try the constrained forms first and only fall back to the
+    // bare length partition - still the best guess available - if the board
+    // gives us nothing to constrain it with.
     if (!words && expectedLengths.length) {
-      const solved = solveByWordLengths(cells, cellsByIdx, n, expectedLengths);
-      if (solved) {
-        words = solved.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
+      const startIdxs = new Set(cells.filter((c) => c.isStart).map((c) => c.idx));
+      const attempts = [];
+      if (dictionary && startIdxs.size) attempts.push({ startIdxs, dictionary });
+      if (dictionary) attempts.push({ dictionary });
+      if (startIdxs.size) attempts.push({ startIdxs });
+      attempts.push({}); // last resort: any partition with the right lengths
+
+      for (const opts of attempts) {
+        const solved = solveByWordLengths(cells, cellsByIdx, n, expectedLengths, opts);
+        if (solved) {
+          words = solved.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
+          break;
+        }
       }
     }
 
@@ -405,11 +548,14 @@
 
   // ─── Overlay rendering ────────────────────────────────────────────────────
 
-  function run() {
+  async function run() {
     const gridRoot = findGrid();
     if (!gridRoot) return { ok: false, error: 'Could not find the Wend puzzle grid on this page.' };
 
-    const scrape = scrapeBoard(gridRoot);
+    // Optional: null just means the word-shape constraint gets skipped.
+    const dictionary = await loadDictionary();
+
+    const scrape = scrapeBoard(gridRoot, dictionary);
     if (!scrape.ok) return scrape;
 
     const rowsByLength   = buildWordListRowsByLength();
@@ -451,6 +597,28 @@
     window.LockedInOverlay.show({ anchorEl: gridRoot, markers, linePaths });
     return { ok: true };
   }
+
+  // Reports which of the board's signals are actually present and what each
+  // strategy makes of them, so a wrong answer can be traced to the layer that
+  // produced it. Run `LockedInDebug.wend()` in the console on the Wend page.
+  async function debugDump() {
+    const gridRoot = findGrid();
+    if (!gridRoot) return 'No Wend grid on this page.';
+    const dictionary = await loadDictionary();
+    const scrape = scrapeBoard(gridRoot, dictionary);
+    if (!scrape.ok) return scrape.error;
+
+    const words = scrape.words.map(({ cells }) => cells.map((c) => c.letter).join(''));
+    return [
+      `expected word lengths: [${getExpectedWordLengths().join(', ')}]`,
+      `dictionary: ${dictionary ? `${dictionary.size} words` : 'FAILED TO LOAD'}`,
+      `words found: ${words.join(', ')}`,
+      `all in dictionary: ${dictionary ? words.every((w) => dictionary.has(w.toLowerCase())) : 'n/a'}`,
+    ].join('\n');
+  }
+
+  window.LockedInDebug = window.LockedInDebug || {};
+  window.LockedInDebug.wend = () => debugDump().then((text) => console.log(text));
 
   window.LockedInGames = window.LockedInGames || [];
   window.LockedInGames.push({

@@ -20,12 +20,18 @@
 // Sudoku needed a hard refresh. The heartbeat always gets another chance.
 
 (function () {
-  // Heartbeat period. Cheap when there's nothing to do: a URL compare and two
-  // boolean checks.
+  // Safety-net heartbeat, for the cases nothing else fires on: the page going
+  // permanently quiet mid-load, or the overlay dropping itself with no
+  // mutation to follow. Cheap when there's nothing to do - a URL compare and
+  // two boolean checks. The primary trigger is the settle timer below.
   const TICK_MS = 300;
   // How long the DOM has to stay quiet before we scrape, so we read a finished
   // render instead of a half-committed one.
-  const SETTLE_MS = 150;
+  const SETTLE_MS = 100;
+  // ...but LinkedIn pages are never reliably quiet - a ticker, a lazy image, an
+  // animation - and waiting for a silence that never comes would mean never
+  // scraping at all. Past this much waiting, take what's on the page.
+  const MAX_SETTLE_MS = 1000;
   // Backoff bounds for repeated failures (grid not ready, unsolvable scrape).
   // The first few failures don't back off at all - they're almost always just
   // "the board hasn't finished rendering", and that resolves in well under a
@@ -64,8 +70,18 @@
   let autoSolving = false; // prevents concurrent auto-solve calls
   let consecutiveFailures = 0;
   let nextAttemptAt = 0; // epoch ms; don't attempt again before this
-  let lastAttemptAt = 0; // epoch ms of the last attempt
+  let domRevision = 0; // bumped once per DOM mutation batch
   let domTouchedAt = 0; // epoch ms of the most recent DOM mutation
+  let domDirtySince = 0; // epoch ms the DOM first changed after our last attempt
+  let scrapedRevision = -1; // domRevision as of our last attempt
+
+  // Has the page changed since the last time we scraped it? A counter rather
+  // than a timestamp comparison: mutations land in the same millisecond as the
+  // scrape they should invalidate often enough that "newer than" silently reads
+  // as "unchanged", stranding us on the retry backoff for no reason.
+  function domChangedSinceLastAttempt() {
+    return domRevision !== scrapedRevision;
+  }
 
   function markSolved() {
     solvedOnThisPage = true;
@@ -104,10 +120,13 @@
     if (autoSolving || solvedOnThisPage || window.LockedInOverlay.isActive()) return;
 
     const now = Date.now();
-    if (domTouchedAt > lastAttemptAt) {
+    if (domChangedSinceLastAttempt()) {
       // The page changed since we last looked: retry as soon as it settles,
-      // ignoring whatever backoff the previous failure set.
-      if (now - domTouchedAt < SETTLE_MS) return;
+      // ignoring whatever backoff the previous failure set - but don't hold out
+      // forever for a quiet moment that may never come.
+      const settled = now - domTouchedAt >= SETTLE_MS;
+      const waitedLongEnough = now - domDirtySince >= MAX_SETTLE_MS;
+      if (!settled && !waitedLongEnough) return;
     } else if (now < nextAttemptAt) {
       return;
     }
@@ -116,7 +135,7 @@
     if (!game) return;
 
     autoSolving = true;
-    lastAttemptAt = now;
+    scrapedRevision = domRevision;
     try {
       const result = await Promise.resolve(game.run());
       if (result && result.ok) markSolved();
@@ -150,10 +169,27 @@
     return true; // keep the message channel open for the async response
   });
 
+  // Scrape as soon as the DOM goes quiet rather than on the next heartbeat.
+  // Waiting for the heartbeat put up to a full TICK_MS between "the board
+  // finished rendering" and "the overlay appears", on top of the settle
+  // window - which is most of the delay before the overlay shows up. The +16ms
+  // keeps the timer from landing a hair early and being bounced by tick()'s own
+  // settle check, costing another whole heartbeat.
+  let settleTimer = null;
+  function scheduleSettledTick() {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(tick, SETTLE_MS + 16);
+  }
+
   new MutationObserver(() => {
+    if (!domChangedSinceLastAttempt()) domDirtySince = Date.now();
+    domRevision++;
     domTouchedAt = Date.now();
+    if (solvedOnThisPage || window.LockedInOverlay.isActive()) return;
+    scheduleSettledTick();
   }).observe(document.body, { childList: true, subtree: true });
 
   setInterval(tick, TICK_MS);
-  tick(); // don't wait a full tick if the page is already loaded
+  tick(); // the board may already be on the page
+  scheduleSettledTick(); // ...and if it isn't, look again the moment it settles
 })();
