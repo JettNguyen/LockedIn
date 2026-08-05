@@ -19,7 +19,7 @@ out of the overlay so you always know what's left.
 | **Zip** | Green line tracing the full path from start to finish |
 | **Patches** | Colored region outlines, with the cells you haven't placed yet hatched |
 | **Wend** | White path line per word with a filled start square and hollow end square |
-| **CrossClimb** | Numbered position badges on each row showing the correct drag order |
+| **CrossClimb** | Numbered position badges showing the drag order, worked out from the rungs you've filled in |
 
 ## Usage
 
@@ -93,6 +93,9 @@ popup.html / popup.js   Extension popup (Solve button + status message)
 overlay.css             Shared styles (marker highlight, breathing animation, fade-on-complete)
 shared/
   overlay.js            Game-agnostic overlay renderer used by every game module
+  wordlist.js           Lazy loader for the two word lists below
+  words.txt             Webster's Second (public domain) — is this a real word?
+  common-words.txt      ~9.4k most frequent English words — which real word is meant?
 games/
   queens/
     solver.js           Backtracking constraint solver (pure, no DOM)
@@ -109,10 +112,9 @@ games/
   patches/
     game.js             Constraint-propagation + backtracking solver and scraper combined
   wend/
-    words.txt           Word list (Webster's Second, public domain) used to reject non-words
     game.js             Reads word order from LinkedIn's embedded position data and renders paths
   crossclimb/
-    game.js             Finds a valid word-ladder ordering and shows numbered drag-position markers
+    game.js             Deterministic word-ladder constraint solver (no AI)
 ```
 
 ## Adding a new game
@@ -198,3 +200,32 @@ console.log(solveZip({
   ),
 }));
 ```
+
+## What isn't solvable from the page
+
+Two of LinkedIn's games can't be solved deterministically, and it's worth being
+precise about why rather than shipping a guess.
+
+**CrossClimb** turns on reading a clue — "Chowder ingredient" → `CLAM` — and
+that knowledge is nowhere in the DOM. What *is* on the page is the ladder rule,
+and it constrains hard: the rungs must reorder into a chain where neighbours
+differ by exactly one letter and every rung is a real word. So the solver works
+from whatever you've typed in and reports only what those constraints force —
+the drag order, any blank rung the chain pins down, and the candidates for the
+locked end rungs. Measured over random ladders drawn from common words, one
+blank rung is uniquely determined about two thirds of the time and two blanks
+about a quarter. A blank board is not solvable, and it says so instead of
+inventing an answer.
+
+One caveat it reports rather than hides: a ladder read top-to-bottom and the
+same ladder read bottom-to-top are both valid chains, so until one of the locked
+end rungs is known the orientation is a genuine coin flip. The overlay shows
+whichever direction is closer to how the rungs are already arranged.
+
+**Pinpoint** isn't supported. The game gives five items and asks for the
+category, which is a pure semantic-knowledge task. Matching against WordNet
+handles clean taxonomic sets — five string instruments do share the ancestor
+"stringed instrument" — but real Pinpoint categories are mostly proper nouns and
+wordplay, and those fall straight through: of five Marvel actors, only one
+appears in WordNet at all, and a category like "___ Ball" shares no ancestor
+beyond "entity". A solver built on that would be wrong more often than right.

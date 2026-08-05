@@ -206,28 +206,13 @@
   // word list turns "any partition that fits" into "the partition where every
   // path is a word", which is very nearly always unique.
   //
-  // games/wend/words.txt is Webster's Second (/usr/share/dict/words); its 1934
-  // copyright has lapsed. It's fetched once, only on the Wend page, and every
-  // caller treats a missing dictionary as "skip that constraint" - so a failed
-  // load degrades to the old behaviour instead of breaking the solve.
-
-  let dictionaryPromise = null;
+  // The list itself lives in shared/wordlist.js, which caches it and resolves to
+  // null if it can't be fetched - every caller here treats a missing dictionary
+  // as "skip that constraint", so a failed load degrades to the old behaviour
+  // instead of breaking the solve.
 
   function loadDictionary() {
-    if (dictionaryPromise) return dictionaryPromise;
-    dictionaryPromise = (async () => {
-      try {
-        const res = await fetch(chrome.runtime.getURL('games/wend/words.txt'));
-        if (!res.ok) return null;
-        const words = (await res.text()).split('\n');
-        const set = new Set();
-        for (const w of words) if (w) set.add(w);
-        return set.size ? set : null;
-      } catch (_) {
-        return null;
-      }
-    })();
-    return dictionaryPromise;
+    return window.LockedInWords.all();
   }
 
   // ─── Position-based reconstruction ────────────────────────────────────────

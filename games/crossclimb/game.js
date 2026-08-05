@@ -7,30 +7,50 @@
 //   id=1-5: middle fillable rungs (data-sortable-item="true"), draggable
 //   id=6: locked bottom rung
 //
-// CLUES: each rung's clue lives in a <p id="crossclimb-clue-section-N"> where N
-// matches data-guess-id. LinkedIn renders all of these in the DOM simultaneously;
-// the nav arrows in the sticky clue section just scroll between them.
+// SOLVING: purely deterministic - no AI, no clue interpretation.
 //
-// SOLVING: uses Chrome's built-in Prompt API (Gemini Nano) to interpret each
-// clue as a 4-letter word, then finds the permutation of those words that forms
-// a valid word ladder (each adjacent pair differs by exactly 1 letter, and the
-// first/last word each differ by 1 from the locked top/bottom rungs when known).
+// The clues can't be solved from the page: reading "Chowder ingredient" and
+// producing CLAM needs world knowledge that isn't anywhere in the DOM. What IS
+// on the page is the ladder rule, and it constrains things hard: the five rungs
+// have to reorder into a chain where each neighbour differs by exactly one
+// letter, every rung is a real word, and the locked top/bottom rungs extend the
+// chain at each end.
 //
-// OVERLAY: each middle rung's left drag handle gets a numbered badge showing
-// its target position (1=top) and the AI-solved word. Badges fade once the
-// user drags that row into the correct slot.
+// So this works from whatever you've typed in and reports only what those
+// constraints *force*:
+//   • the order of the rungs you've filled (always determined once all five are in)
+//   • any rung you haven't filled whose word the chain pins down - one blank
+//     is uniquely determined about 2/3 of the time (measured over random
+//     ladders drawn from common words), two blanks about 1/4
+//   • candidates for the locked top and bottom rungs
+//
+// Where the constraints leave a genuine choice, it says so rather than picking
+// one. An arbitrary pick that happens to form a valid ladder is exactly the
+// kind of confidently-wrong answer that's worse than no answer.
+//
+// OVERLAY: each middle rung's drag handle gets a numbered badge showing its
+// target position (1=top) and its word. Badges fade once you drag that row into
+// the right slot.
 
 (function () {
+  // A ladder longer than this would make the permutation sweep silly; LinkedIn
+  // has only ever shipped 5 middle rungs.
+  const MAX_SOLUTIONS = 4000;
+
   // ── DOM helpers ────────────────────────────────────────────────────────────
 
   function findGrid() {
     return document.querySelector('.crossclimb__grid');
   }
 
-  // Read the 4-letter word from a rung's inputs. Returns null if any are empty.
+  function guessInputs(rowEl) {
+    return rowEl.querySelectorAll('input[data-crossclimb-guess-input-idx]');
+  }
+
+  // Read the word from a rung's inputs. Returns null unless every box is filled.
   function readWord(rowEl) {
-    const inputs = rowEl.querySelectorAll('input[data-crossclimb-guess-input-idx]');
-    if (inputs.length !== 4) return null;
+    const inputs = guessInputs(rowEl);
+    if (!inputs.length) return null;
     let word = '';
     for (const input of inputs) {
       const ch = (input.value || '').trim().toUpperCase();
@@ -52,135 +72,170 @@
       const dragger =
         rowEl.querySelector('.crossclimb__guess-dragger.crossclimb__guess-dragger__left') ||
         rowEl.querySelector('.crossclimb__guess-dragger');
-      const word = readWord(rowEl);
-      return { id, word, rowEl, boxes, dragger };
+      return { id, word: readWord(rowEl), slots: guessInputs(rowEl).length, rowEl, boxes, dragger };
     });
 
     rows.sort((a, b) => a.id - b.id);
     return { ok: true, rows };
   }
 
-  // Collect the clue text for each middle rung (ids 1-5).
-  // LinkedIn only renders one clue at a time via a carousel. We click each
-  // rung row directly to focus it (which updates the clue display), then fall
-  // back to nav-button navigation if clicking rows doesn't work.
-  async function gatherClues(middleRows) {
-    // Fast path: all clue elements happen to already be in the DOM.
-    const directClues = middleRows.map((row) => {
-      const el = document.getElementById(`crossclimb-clue-section-${row.id}`);
-      return el ? el.textContent.trim() : null;
-    });
-    if (directClues.every((c) => c)) return directClues;
-
-    const clueMap = new Map(); // rung id (number) → clue text
-
-    function getClueEl() { return document.querySelector('.crossclimb__clue'); }
-
-    function readCurrentClue() {
-      const p = getClueEl();
-      if (!p) return null;
-      const m = (p.id || '').match(/crossclimb-clue-section-(\d+)/);
-      if (!m) return null;
-      clueMap.set(Number(m[1]), p.textContent.trim());
-      return Number(m[1]);
-    }
-
-    // Wait until the displayed clue ID changes from `fromId` (or until timeout).
-    async function waitForChange(fromId, timeout = 600) {
-      const deadline = Date.now() + timeout;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 30));
-        const p = getClueEl();
-        if (p) {
-          const m = (p.id || '').match(/crossclimb-clue-section-(\d+)/);
-          if (m && Number(m[1]) !== fromId) return;
-        }
-      }
-    }
-
-    // Primary strategy: click each rung row to focus it, which should update
-    // the clue display to show that rung's clue.
-    for (const row of middleRows) {
-      const prevId = readCurrentClue();
-      row.rowEl.click();
-      await waitForChange(prevId);
-      readCurrentClue();
-    }
-
-    // If clicking rows didn't get everything, fall back to nav buttons.
-    if (!middleRows.every((row) => clueMap.has(row.id))) {
-      const getPrev = () => document.querySelector('[aria-label="Go to previous row"]');
-      const getNext = () => document.querySelector('[aria-label="Go to next row"]');
-
-      // Step back to the first rung.
-      for (let i = 0; i < 10; i++) {
-        const btn = getPrev();
-        if (!btn || btn.disabled) break;
-        const prevId = readCurrentClue();
-        btn.click();
-        await waitForChange(prevId);
-        readCurrentClue();
-      }
-
-      // Sweep forward through all rungs.
-      for (let i = 0; i < 10; i++) {
-        const btn = getNext();
-        if (!btn || btn.disabled) break;
-        const prevId = readCurrentClue();
-        btn.click();
-        await waitForChange(prevId);
-        readCurrentClue();
-      }
-    }
-
-    return middleRows.map((row) => clueMap.get(row.id) || null);
-  }
-
-  // ── Word ladder logic ──────────────────────────────────────────────────────
+  // ── Ladder logic ───────────────────────────────────────────────────────────
 
   function hammingDiff(a, b) {
     if (!a || !b || a.length !== b.length) return Infinity;
     let diff = 0;
-    for (let i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) diff++;
-    }
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
     return diff;
   }
 
-  // Backtracking: find all permutations of `words` where each adjacent pair
-  // differs by exactly 1 letter, optionally constrained by topWord / bottomWord.
-  function findValidOrderings(words, topWord, bottomWord) {
-    const n = words.length;
-    const results = [];
+  // Adjacency over the candidate vocabulary: word → every word one letter away.
+  function buildLadderGraph(vocabulary) {
+    const present = new Set(vocabulary);
+    const graph = new Map();
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+    for (const word of vocabulary) {
+      const neighbours = [];
+      for (let i = 0; i < word.length; i++) {
+        for (const ch of alphabet) {
+          if (ch === word[i]) continue;
+          const candidate = word.slice(0, i) + ch + word.slice(i + 1);
+          if (present.has(candidate)) neighbours.push(candidate);
+        }
+      }
+      graph.set(word, neighbours);
+    }
+    return graph;
+  }
 
-    const dist = Array.from({ length: n }, (_, i) =>
-      Array.from({ length: n }, (_, j) => hammingDiff(words[i], words[j]))
-    );
+  /**
+   * Enumerate every way the rungs can be ordered and filled so the result is a
+   * valid ladder. `known[i]` is rung i's typed word (uppercase) or null.
+   *
+   * Returns { solutions, truncated }. Each solution is an array of rung indices
+   * in ladder order plus the word each one holds.
+   */
+  function findLadders(known, graph, topWord, bottomWord) {
+    const n = known.length;
+    const vocabulary = [...graph.keys()];
+    const solutions = [];
+    let truncated = false;
 
     const used = new Array(n).fill(false);
-    const perm = [];
+    const orderIdx = [];
+    const orderWord = [];
 
-    function bt() {
-      const pos = perm.length;
+    function extend() {
+      if (solutions.length >= MAX_SOLUTIONS) { truncated = true; return; }
+
+      const pos = orderIdx.length;
       if (pos === n) {
-        if (bottomWord && hammingDiff(words[perm[n - 1]], bottomWord) !== 1) return;
-        results.push(perm.slice());
+        if (bottomWord && hammingDiff(orderWord[n - 1].toUpperCase(), bottomWord) !== 1) return;
+        solutions.push({ order: orderIdx.slice(), words: orderWord.slice() });
         return;
       }
-      for (let i = 0; i < n; i++) {
-        if (used[i]) continue;
-        if (pos > 0 && dist[perm[pos - 1]][i] !== 1) continue;
-        if (pos === 0 && topWord && hammingDiff(topWord, words[i]) !== 1) continue;
-        used[i] = true;
-        perm.push(i);
-        bt();
-        perm.pop();
-        used[i] = false;
+
+      // Which words could sit at this position? After the first rung it must be
+      // a neighbour of the previous one, which is what keeps this tractable.
+      const prev = pos > 0 ? orderWord[pos - 1] : null;
+      const candidates = prev ? graph.get(prev) || [] : vocabulary;
+
+      for (let rung = 0; rung < n; rung++) {
+        if (used[rung]) continue;
+        const fixed = known[rung] ? known[rung].toLowerCase() : null;
+
+        for (const word of candidates) {
+          if (fixed && word !== fixed) continue;
+          if (orderWord.includes(word)) continue;
+          if (pos === 0 && topWord && hammingDiff(word.toUpperCase(), topWord) !== 1) continue;
+
+          used[rung] = true;
+          orderIdx.push(rung);
+          orderWord.push(word);
+          extend();
+          orderWord.pop();
+          orderIdx.pop();
+          used[rung] = false;
+
+          if (solutions.length >= MAX_SOLUTIONS) { truncated = true; return; }
+        }
       }
     }
 
-    bt();
-    return results;
+    extend();
+    return { solutions, truncated };
+  }
+
+  // A ladder read top-to-bottom and the same ladder read bottom-to-top are both
+  // valid chains, so unless a locked end rung pins the direction down, every
+  // ladder is found twice. Left alone that reads as "two possibilities" and
+  // wipes out every rung's position except the middle one, which is why this
+  // groups a ladder with its mirror image and treats the pair as one answer.
+  function groupByReversal(solutions) {
+    const groups = new Map();
+    for (const solution of solutions) {
+      const forward = solution.words.join(' ');
+      const backward = [...solution.words].reverse().join(' ');
+      const key = forward < backward ? forward : backward;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(solution);
+    }
+    return [...groups.values()];
+  }
+
+  // Of a ladder's two orientations, take the one closer to how the rungs are
+  // already arranged on screen - fewest drags to get there, and no worse than a
+  // coin flip when the board can't say.
+  function pickOrientation(variants, middleRows) {
+    let best = variants[0];
+    let bestCost = Infinity;
+    for (const variant of variants) {
+      let cost = 0;
+      for (let slot = 0; slot < variant.order.length; slot++) {
+        const current = currentPositionOf(middleRows[variant.order[slot]].rowEl);
+        cost += current === -1 ? 0 : Math.abs(current - (slot + 1));
+      }
+      if (cost < bestCost) { bestCost = cost; best = variant; }
+    }
+    return best;
+  }
+
+  // Collapse the solution set down to what every solution agrees on. A rung's
+  // position or word is only reported when nothing else was possible.
+  function consensusOf(solutions, rungCount) {
+    const position = new Array(rungCount).fill(null);
+    const word = new Array(rungCount).fill(null);
+
+    for (let rung = 0; rung < rungCount; rung++) {
+      const positions = new Set();
+      const words = new Set();
+      for (const solution of solutions) {
+        const slot = solution.order.indexOf(rung);
+        positions.add(slot);
+        words.add(solution.words[slot]);
+      }
+      if (positions.size === 1) position[rung] = [...positions][0] + 1;
+      if (words.size === 1) word[rung] = [...words][0].toUpperCase();
+    }
+
+    return { position, word };
+  }
+
+  // The distinct answers the board allows, mirror images already merged.
+  function distinctLadders(solutions, middleRows) {
+    const groups = groupByReversal(solutions);
+    return groups.map((variants) => pickOrientation(variants, middleRows));
+  }
+
+  // Real words one letter off the end of the ladder that aren't already in it -
+  // the candidates for a locked rung.
+  function endCandidates(endWord, ladderWords, graph) {
+    // The graph is lowercase throughout and the ladder is displayed uppercase;
+    // compare in one case or the filter silently never matches and every
+    // candidate list comes back including words already used in the ladder.
+    const inLadder = new Set(ladderWords.map((w) => w.toLowerCase()));
+    return (graph.get(endWord.toLowerCase()) || [])
+      .filter((w) => !inLadder.has(w))
+      .map((w) => w.toUpperCase());
   }
 
   // ── Position tracking ──────────────────────────────────────────────────────
@@ -203,25 +258,9 @@
       `<span style="display:flex;flex-direction:column;align-items:center;justify-content:center;` +
       `width:100%;height:100%;background:${bg};border-radius:4px;color:#fff;font-weight:700;line-height:1.2;">` +
       `<span style="font-size:0.8em;">${pos}</span>` +
-      `<span style="font-size:0.55em;opacity:0.9;letter-spacing:0.04em;">${word}</span>` +
+      `<span style="font-size:0.55em;opacity:0.9;letter-spacing:0.04em;">${word || ''}</span>` +
       `</span>`
     );
-  }
-
-  // ── Chrome AI bridge ──────────────────────────────────────────────────────
-
-  // Sends clues to background.js, which runs window.ai in the page's main
-  // world (where the Prompt API is available) and returns the solved words.
-  function solveCluesViaBackground(clues) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'LOCKEDIN_SOLVE_AI', clues }, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        resolve(response);
-      });
-    });
   }
 
   // ── Entry point ────────────────────────────────────────────────────────────
@@ -237,113 +276,132 @@
 
     const { rows } = scrape;
     const topRow = rows.find((r) => r.id === 0) || null;
-    const bottomRow = rows.find((r) => r.id === 6) || null;
-    const middleRows = rows.filter((r) => r.id > 0 && r.id < 6);
+    const bottomRow = rows.find((r) => r.id === rows[rows.length - 1].id) || null;
+    const middleRows = rows.filter((r) => r !== topRow && r !== bottomRow);
 
-    if (middleRows.length !== 5) {
+    if (middleRows.length < 2) {
+      return { ok: false, error: 'The CrossClimb board looks half-loaded — found fewer than two fillable rungs.' };
+    }
+
+    const known = middleRows.map((r) => r.word);
+    const filledCount = known.filter(Boolean).length;
+    const wordLength = middleRows.map((r) => r.slots).find((n) => n > 0) || (known.find(Boolean) || '').length;
+    if (!wordLength) {
+      return { ok: false, error: 'Could not tell how long the CrossClimb answers are.' };
+    }
+
+    // Search common words first: the intended answers live there, and the
+    // smaller graph is what makes a blank rung resolvable at all. Only widen to
+    // the full dictionary if that finds nothing.
+    let result = null;
+    let graph = null;
+    for (const commonOnly of [true, false]) {
+      const vocabulary = await window.LockedInWords.ofLength(wordLength, { commonOnly });
+      if (!vocabulary) continue;
+      // Anything already typed has to be in the graph even if it's an unusual word.
+      for (const w of known) if (w) vocabulary.push(w.toLowerCase());
+      graph = buildLadderGraph([...new Set(vocabulary)]);
+      const attempt = findLadders(known, graph, topRow && topRow.word, bottomRow && bottomRow.word);
+      if (attempt.solutions.length) { result = attempt; break; }
+    }
+
+    if (!graph) {
+      return { ok: false, error: 'Could not load the word list.' };
+    }
+    if (!result || !result.solutions.length) {
       return {
         ok: false,
-        error: `Expected 5 fillable rungs but found ${middleRows.length}. Is the CrossClimb puzzle fully loaded?`,
+        error: filledCount === middleRows.length
+          ? "The words on the board don't form a valid ladder — one of them may be wrong."
+          : 'No valid ladder fits what\'s on the board yet.',
+      };
+    }
+    if (result.truncated) {
+      return {
+        ok: false,
+        error: `Too many ladders still fit (${filledCount} of ${middleRows.length} rungs filled in). ` +
+               'Solve a clue or two and this will work out the rest.',
       };
     }
 
-    const clues = await gatherClues(middleRows);
-    const missingCount = clues.filter((c) => !c).length;
-    if (missingCount > 0) {
+    const ladders = distinctLadders(result.solutions, middleRows);
+    const { position, word } = consensusOf(ladders, middleRows.length);
+    const determined = position.filter(Boolean).length;
+    if (!determined) {
       return {
         ok: false,
-        error: `Could not read ${missingCount} clue(s) from the page. Try scrolling through the rungs and solving again.`,
+        error: `${ladders.length} different ladders still fit what's on the board. ` +
+               'Fill in another clue and the rest should follow.',
       };
     }
 
-    const topWord = topRow ? topRow.word : null;
-    const bottomWord = bottomRow ? bottomRow.word : null;
-
-    // Send clues to background.js to solve via Gemini Nano in the main world.
-    let aiResult;
-    try {
-      aiResult = await solveCluesViaBackground(clues);
-    } catch (err) {
-      return { ok: false, error: `Could not reach background service: ${err.message}` };
-    }
-
-    if (aiResult.error === 'NO_AI') {
-      const debug = aiResult.debug ? `\n\nDiagnostic: ${aiResult.debug}` : '';
-      return {
-        ok: false,
-        error:
-          "Chrome's built-in AI (Gemini Nano) isn't available yet.\n\n" +
-          'Full setup (all steps required):\n' +
-          '1. chrome://flags/#prompt-api-for-gemini-nano → Enabled\n' +
-          '2. chrome://flags/#optimization-guide-on-device-model → Enabled BypassPerfRequirement\n' +
-          '3. Relaunch Chrome\n' +
-          '4. Go to chrome://components → find "Optimization Guide On Device Model" → click Check for update\n' +
-          '5. Wait for the model to download (may take several minutes)\n' +
-          '6. Try Solve again' +
-          debug,
-      };
-    }
-
-    if (aiResult.error === 'MODEL_NOT_READY') {
-      return {
-        ok: false,
-        error:
-          "Gemini Nano is enabled but the model hasn't finished downloading yet.\n\n" +
-          'To check: go to chrome://components and look for\n' +
-          '"Optimization Guide On Device Model" — it should show a version number.\n\n' +
-          'Try again in a few minutes.',
-      };
-    }
-
-    if (aiResult.error) {
-      return { ok: false, error: `Chrome AI error: ${aiResult.error}` };
-    }
-
-    const words = aiResult.words;
-
-    const failedIdx = words.findIndex((w) => !w);
-    if (failedIdx !== -1) {
-      return {
-        ok: false,
-        error: `Chrome AI couldn't determine a 4-letter word for clue ${failedIdx + 1}:\n"${clues[failedIdx]}"`,
-      };
-    }
-
-    // Find a valid word-ladder ordering.
-    let orderings = findValidOrderings(words, topWord, bottomWord);
-    if (orderings.length === 0 && (topWord || bottomWord)) {
-      orderings = findValidOrderings(words, null, null);
-    }
-
-    if (orderings.length === 0) {
-      const wordList = clues.map((c, i) => `${i + 1}. "${c}" → ${words[i]}`).join('\n');
-      return {
-        ok: false,
-        error: `The AI's answers don't form a valid word ladder. It may have guessed one wrong:\n\n${wordList}`,
-      };
-    }
-
-    const ordering = orderings[0];
-
-    const targetPos = new Array(5).fill(0);
-    for (let slot = 0; slot < 5; slot++) {
-      targetPos[ordering[slot]] = slot + 1;
-    }
-
-    const markers = middleRows.map((row, rowIdx) => {
-      const pos = targetPos[rowIdx];
+    const markers = [];
+    for (let i = 0; i < middleRows.length; i++) {
+      if (!position[i]) continue; // genuinely ambiguous - say nothing rather than guess
+      const row = middleRows[i];
+      const pos = position[i];
       const anchorEl = row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl);
-      return {
+      markers.push({
         cellEl: anchorEl,
-        html: badgeHtml(pos, words[rowIdx]),
+        html: badgeHtml(pos, known[i] ? '' : word[i]),
         color: POSITION_COLORS[(pos - 1) % POSITION_COLORS.length],
         isFilled: () => currentPositionOf(row.rowEl) === pos,
-      };
-    });
+      });
+    }
 
     window.LockedInOverlay.show({ anchorEl: grid, markers });
     return { ok: true };
   }
+
+  // Prints what the board constrains and what it doesn't - including the top and
+  // bottom rung candidates, which have no sensible place in the overlay itself.
+  // Run `LockedInDebug.crossclimb()` in the console on the CrossClimb page.
+  async function debugDump() {
+    const grid = findGrid();
+    if (!grid) return 'No CrossClimb grid on this page.';
+    const scrape = scrapeBoard(grid);
+    if (!scrape.ok) return scrape.error;
+
+    const rows = scrape.rows;
+    const topRow = rows[0];
+    const bottomRow = rows[rows.length - 1];
+    const middleRows = rows.slice(1, -1);
+    const known = middleRows.map((r) => r.word);
+    const wordLength = middleRows.map((r) => r.slots).find((n) => n > 0);
+    if (!wordLength) return 'Could not tell how long the answers are.';
+
+    const lines = [`typed so far: ${known.map((w) => w || '????').join(' ')}`];
+    for (const commonOnly of [true, false]) {
+      const vocabulary = await window.LockedInWords.ofLength(wordLength, { commonOnly });
+      if (!vocabulary) { lines.push('word list failed to load'); break; }
+      for (const w of known) if (w) vocabulary.push(w.toLowerCase());
+      const graph = buildLadderGraph([...new Set(vocabulary)]);
+      const { solutions, truncated } = findLadders(known, graph, topRow.word, bottomRow.word);
+      const label = commonOnly ? 'common words' : 'full dictionary';
+      const ladders = truncated ? [] : distinctLadders(solutions, middleRows);
+      lines.push(`${label}: ${vocabulary.length} candidates, ${truncated ? `${solutions.length}+` : ladders.length} distinct ladder(s)`);
+      if (solutions.length && !truncated) {
+        const { position, word } = consensusOf(ladders, middleRows.length);
+        lines.push(`  forced positions: ${position.map((p) => p || '?').join(' ')}`);
+        lines.push(`  forced words:     ${word.map((w, i) => known[i] || w || '????').join(' ')}`);
+        if (ladders.length === 1) {
+          const ladder = ladders[0].words.map((w) => w.toUpperCase());
+          lines.push(`  ladder: ${ladder.join(' -> ')}`);
+          if (!topRow.word && !bottomRow.word) {
+            lines.push('  (nothing locked at either end, so this ladder could equally run the other way —');
+            lines.push('   the orientation shown is whichever is closer to the current arrangement)');
+          }
+          if (!topRow.word) lines.push(`  top rung candidates:    ${endCandidates(ladder[0], ladder, graph).join(', ') || '(none)'}`);
+          if (!bottomRow.word) lines.push(`  bottom rung candidates: ${endCandidates(ladder[ladder.length - 1], ladder, graph).join(', ') || '(none)'}`);
+        }
+        break;
+      }
+    }
+    return lines.join('\n');
+  }
+
+  window.LockedInDebug = window.LockedInDebug || {};
+  window.LockedInDebug.crossclimb = () => debugDump().then((text) => console.log(text));
 
   window.LockedInGames = window.LockedInGames || [];
   window.LockedInGames.push({

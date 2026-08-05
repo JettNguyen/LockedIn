@@ -1,18 +1,15 @@
 {
   "manifest_version": 3,
   "name": "LockedIn",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Solves LinkedIn's puzzle games (Queens, Tango, Mini Sudoku, Zip, Patches, Wend, CrossClimb) and overlays the solution on top of the page without touching the underlying DOM.",
   "permissions": ["activeTab", "scripting"],
-  "background": {
-    "service_worker": "background.js"
-  },
   "action": {
     "default_popup": "popup.html"
   },
   "web_accessible_resources": [
     {
-      "resources": ["games/wend/words.txt"],
+      "resources": ["shared/words.txt", "shared/common-words.txt"],
       "matches": ["https://www.linkedin.com/*"]
     }
   ],
@@ -22,6 +19,7 @@
       "matches": ["https://www.linkedin.com/*"],
       "js": [
         "shared/overlay.js",
+        "shared/wordlist.js",
         "games/queens/solver.js",
         "games/queens/game.js",
         "games/tango/solver.js",
