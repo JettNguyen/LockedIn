@@ -83,6 +83,9 @@
     return domRevision !== scrapedRevision;
   }
 
+  let attempts = 0;
+  let lastOutcome = 'no attempt yet';
+
   function markSolved() {
     solvedOnThisPage = true;
     consecutiveFailures = 0;
@@ -132,15 +135,25 @@
     }
 
     const game = findActiveGame();
-    if (!game) return;
+    if (!game) {
+      lastOutcome = `no registered game matches ${location.pathname}`;
+      return;
+    }
 
     autoSolving = true;
     scrapedRevision = domRevision;
+    attempts++;
     try {
       const result = await Promise.resolve(game.run());
-      if (result && result.ok) markSolved();
-      else noteFailure();
-    } catch (_) {
+      if (result && result.ok) {
+        lastOutcome = `${game.label}: solved`;
+        markSolved();
+      } else {
+        lastOutcome = `${game.label}: ${(result && result.error) || 'failed with no reason given'}`;
+        noteFailure();
+      }
+    } catch (err) {
+      lastOutcome = `${game.label} threw: ${err && err.message ? err.message : err}`;
       noteFailure();
     } finally {
       autoSolving = false;
@@ -187,9 +200,32 @@
     domTouchedAt = Date.now();
     if (solvedOnThisPage || window.LockedInOverlay.isActive()) return;
     scheduleSettledTick();
-  }).observe(document.body, { childList: true, subtree: true });
+    // documentElement, not body: a SPA route change can replace <body> outright,
+    // and an observer bound to the old one goes quiet forever - taking the
+    // prompt trigger with it and leaving only the heartbeat's slow backoff.
+  }).observe(document.documentElement, { childList: true, subtree: true });
 
   setInterval(tick, TICK_MS);
   tick(); // the board may already be on the page
   scheduleSettledTick(); // ...and if it isn't, look again the moment it settles
+
+  // Why isn't the overlay up? Every reason auto-solve declines to act shows up
+  // in one of these lines, so `LockedInDebug.status()` in the console answers
+  // that directly instead of by elimination.
+  window.LockedInDebug = window.LockedInDebug || {};
+  window.LockedInDebug.status = () => {
+    const games = window.LockedInGames || [];
+    const matched = games.filter((g) => g.detect()).map((g) => g.id);
+    console.log([
+      `url:               ${location.href}`,
+      `games registered:  ${games.map((g) => g.id).join(', ') || '(none — the content scripts did not all load)'}`,
+      `detect() matches:  ${matched.join(', ') || '(NONE — this is why nothing happens)'}`,
+      `overlay showing:   ${window.LockedInOverlay.isActive()}`,
+      `marked solved:     ${solvedOnThisPage}`,
+      `solve attempts:    ${attempts}`,
+      `last outcome:      ${lastOutcome}`,
+      `dom revision:      ${domRevision} (last scraped at ${scrapedRevision})`,
+      `consecutive fails: ${consecutiveFailures}`,
+    ].join('\n'));
+  };
 })();

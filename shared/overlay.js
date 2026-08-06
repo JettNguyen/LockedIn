@@ -224,8 +224,13 @@ window.LockedInOverlay = (function () {
 
   // --- SVG path line helpers (used by Zip) ---
 
+  function centerOf(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
   function updateSvgLine(svgLine) {
-    const { polylineEl, cells, isDrawn } = svgLine;
+    const { polylineEl, cells, isDrawn, widthRatio, startRing, endArrow } = svgLine;
 
     // If isDrawn is provided, find the longest correctly-drawn prefix from the
     // front and only render the remaining suffix — the part the user still needs
@@ -242,19 +247,53 @@ window.LockedInOverlay = (function () {
 
     if (displayCells.length < 2) {
       polylineEl.setAttribute('points', '');
+      if (startRing) startRing.setAttribute('r', 0);
+      if (endArrow) endArrow.setAttribute('points', '');
       return;
     }
 
     const firstRect = displayCells[0].getBoundingClientRect();
-    const strokeWidth = Math.max(4, Math.min(firstRect.width, firstRect.height) * 0.28);
-    polylineEl.setAttribute('stroke-width', strokeWidth);
-    const points = displayCells
-      .map((el) => {
-        const r = el.getBoundingClientRect();
-        return `${r.left + r.width / 2},${r.top + r.height / 2}`;
-      })
-      .join(' ');
-    polylineEl.setAttribute('points', points);
+    const cellSize = Math.min(firstRect.width, firstRect.height);
+    polylineEl.setAttribute('stroke-width', Math.max(3, cellSize * widthRatio));
+
+    const points = displayCells.map(centerOf);
+    polylineEl.setAttribute('points', points.map((p) => `${p.x},${p.y}`).join(' '));
+
+    // A ring around the first cell rather than a blob on top of it: the point is
+    // to say "start here" without hiding the letter you need to read.
+    if (startRing) {
+      startRing.setAttribute('cx', points[0].x);
+      startRing.setAttribute('cy', points[0].y);
+      startRing.setAttribute('r', Math.max(6, cellSize * 0.36));
+      startRing.setAttribute('stroke-width', Math.max(2, cellSize * 0.09));
+    }
+
+    // Arrowhead at the far end, pointing along the last segment, so the path
+    // reads in a direction instead of being an ambiguous squiggle.
+    if (endArrow) {
+      const last = points[points.length - 1];
+      const prev = points[points.length - 2];
+      const dx = last.x - prev.x;
+      const dy = last.y - prev.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const size = Math.max(6, cellSize * 0.3);
+      // Stop short of the final cell's centre so the arrow points *at* the last
+      // letter rather than sitting on top of it. The polyline still runs all the
+      // way in, so it's clear the cell belongs to the path.
+      const inset = cellSize * 0.26;
+      const tip = { x: last.x - ux * inset, y: last.y - uy * inset };
+      const baseX = tip.x - ux * size;
+      const baseY = tip.y - uy * size;
+      const halfWidth = size * 0.55;
+      endArrow.setAttribute(
+        'points',
+        `${tip.x},${tip.y} ` +
+        `${baseX - uy * halfWidth},${baseY + ux * halfWidth} ` +
+        `${baseX + uy * halfWidth},${baseY - ux * halfWidth}`
+      );
+    }
   }
 
   function startTrackingLoop() {
@@ -295,8 +334,18 @@ window.LockedInOverlay = (function () {
    * }>} opts.markers - one highlight per cell that still needs to be filled in.
    * @param {{cells: Element[], color?: string, isDrawn?: Function}} [opts.linePath] - optional
    *   single ordered path (e.g. Zip). Shorthand for linePaths with one entry.
-   * @param {Array<{cells: Element[], color?: string, isDrawn?: Function}>} [opts.linePaths] - optional
-   *   multiple ordered paths drawn as separate colored polylines (e.g. Wend).
+   * @param {Array<{
+   *   cells: Element[],
+   *   color?: string,
+   *   isDrawn?: Function,
+   *   widthRatio?: number,   // stroke width as a fraction of a cell (default 0.28).
+   *                          // Drop it when the cell's own content has to stay
+   *                          // readable through the line, as in Wend's letters.
+   *   opacity?: number,      // default 0.85
+   *   showEnds?: boolean,    // ring the first cell, arrowhead on the last, so a
+   *                          // path reads with a start and a direction
+   * }>} [opts.linePaths] - optional multiple ordered paths drawn as separate
+   *   colored polylines (e.g. Wend).
    *   If both linePath and linePaths are provided, linePaths takes precedence.
    * @param {Array<{
    *   color: string,
@@ -336,17 +385,40 @@ window.LockedInOverlay = (function () {
     const svgLines = allLinePaths
       .filter((lp) => lp && lp.cells && lp.cells.length > 1)
       .map((lp) => {
+        const color = lp.color || '#f5c542';
         const svgEl = document.createElementNS(SVG_NS, 'svg');
         svgEl.setAttribute('class', 'li-path-svg');
         const polylineEl = document.createElementNS(SVG_NS, 'polyline');
         polylineEl.setAttribute('fill', 'none');
-        polylineEl.setAttribute('stroke', lp.color || '#f5c542');
+        polylineEl.setAttribute('stroke', color);
         polylineEl.setAttribute('stroke-linecap', 'round');
         polylineEl.setAttribute('stroke-linejoin', 'round');
-        polylineEl.setAttribute('opacity', '0.85');
+        polylineEl.setAttribute('opacity', lp.opacity == null ? '0.85' : String(lp.opacity));
         svgEl.appendChild(polylineEl);
+
+        // Appended after the polyline so they sit on top of it.
+        let startRing = null;
+        let endArrow = null;
+        if (lp.showEnds) {
+          startRing = document.createElementNS(SVG_NS, 'circle');
+          startRing.setAttribute('fill', 'none');
+          startRing.setAttribute('stroke', color);
+          svgEl.appendChild(startRing);
+
+          endArrow = document.createElementNS(SVG_NS, 'polygon');
+          endArrow.setAttribute('fill', color);
+          svgEl.appendChild(endArrow);
+        }
+
         container.appendChild(svgEl);
-        return { polylineEl, cells: lp.cells, isDrawn: lp.isDrawn || null };
+        return {
+          polylineEl,
+          cells: lp.cells,
+          isDrawn: lp.isDrawn || null,
+          widthRatio: lp.widthRatio == null ? 0.28 : lp.widthRatio,
+          startRing,
+          endArrow,
+        };
       });
 
     const markerEls = markers.map(({ cellEl, color, glyph, html, isFilled }) => {

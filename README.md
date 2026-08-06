@@ -18,7 +18,7 @@ out of the overlay so you always know what's left.
 | **Mini Sudoku** | Digit on each empty cell |
 | **Zip** | Green line tracing the full path from start to finish |
 | **Patches** | Colored region outlines, with the cells you haven't placed yet hatched |
-| **Wend** | White path line per word with a filled start square and hollow end square |
+| **Wend** | Thin colored path per word, ringed start cell and an arrowhead showing direction — drawn around the letters so the board stays readable |
 | **CrossClimb** | Numbered position badges showing the drag order, worked out from the rungs you've filled in |
 
 ## Usage
@@ -92,6 +92,7 @@ content.js              Thin dispatcher: detects the active game, calls its run(
 popup.html / popup.js   Extension popup (Solve button + status message)
 overlay.css             Shared styles (marker highlight, breathing animation, fade-on-complete)
 shared/
+  detect.js             Maps a URL to a game; loose about where the slug sits in the path
   overlay.js            Game-agnostic overlay renderer used by every game module
   wordlist.js           Lazy loader for the two word lists below
   words.txt             Webster's Second (public domain) — is this a real word?

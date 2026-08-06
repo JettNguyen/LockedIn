@@ -447,7 +447,7 @@
   window.LockedInGames.push({
     id: 'patches',
     label: 'Patches',
-    detect: () => /\/games\/patches(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('patches')(),
     run,
   });
 })();

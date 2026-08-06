@@ -209,7 +209,7 @@
   window.LockedInGames.push({
     id: 'sudoku',
     label: 'Mini Sudoku',
-    detect: () => /\/games\/(mini-)?sudoku(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('mini-sudoku', 'sudoku')(),
     run,
   });
 })();

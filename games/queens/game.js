@@ -172,7 +172,7 @@
   window.LockedInGames.push({
     id: 'queens',
     label: 'Queens',
-    detect: () => /\/games\/queens(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('queens')(),
     run,
   });
 })();

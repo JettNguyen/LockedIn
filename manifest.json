@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LockedIn",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Solves LinkedIn's puzzle games (Queens, Tango, Mini Sudoku, Zip, Patches, Wend, CrossClimb) and overlays the solution on top of the page without touching the underlying DOM.",
   "permissions": ["activeTab", "scripting"],
   "action": {
@@ -18,6 +18,7 @@
       "//": "Matches all of linkedin.com, not just /games/*, and every game's detect() gates the rest. Chrome only injects a content script on a real document load, so a /games/* match meant that reaching a puzzle the normal way - clicking through from the feed, which LinkedIn routes client-side with no document load - left no script in the page at all. That's why Zip and Mini Sudoku only ever appeared after a hard refresh or a manual Solve (the popup force-injects). Matching every LinkedIn page means the script is already there when the SPA routes into a game, and the heartbeat in content.js notices the URL change.",
       "matches": ["https://www.linkedin.com/*"],
       "js": [
+        "shared/detect.js",
         "shared/overlay.js",
         "shared/wordlist.js",
         "games/queens/solver.js",

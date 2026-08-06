@@ -288,7 +288,7 @@
   window.LockedInGames.push({
     id: 'zip',
     label: 'Zip',
-    detect: () => /\/games\/zip(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('zip')(),
     run,
   });
 })();

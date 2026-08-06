@@ -550,7 +550,6 @@
     });
     const boardSolved    = wordRowEls.every((r) => r && r.dataset.locked === 'true');
 
-    const markers   = [];
     const linePaths = [];
 
     for (let wi = 0; wi < scrape.words.length; wi++) {
@@ -560,26 +559,23 @@
         ? () => false
         : () => rowEl ? rowEl.dataset.locked === 'true' : false;
 
-      markers.push({
-        cellEl: cells[0].el,
-        html:   `<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:${color};border-radius:3px"><span style="width:32%;height:32%;background:#fff;border-radius:50%;flex-shrink:0"></span></span>`,
-        color,
-        isFilled: isWordSolved,
-      });
-      markers.push({
-        cellEl: cells[cells.length - 1].el,
-        html:   `<span style="display:flex;width:100%;height:100%;background:rgba(255,255,255,0.15);border-radius:3px"></span>`,
-        color,
-        isFilled: isWordSolved,
-      });
+      // No cell markers. This used to drop a solid block of colour on the first
+      // cell and a wash on the last, which marked the ends by covering up the
+      // two letters you most need to read. The ring and arrowhead on the line
+      // carry the same information around the letters instead of over them, and
+      // the line itself is thin and in the word's own colour rather than a fat
+      // white bar - so you can still read the board through the solution.
       linePaths.push({
-        cells:   cells.map((c) => c.el),
-        color:   '#ffffff',
-        isDrawn: isWordSolved,
+        cells:      cells.map((c) => c.el),
+        color,
+        isDrawn:    isWordSolved,
+        widthRatio: 0.14,
+        opacity:    0.8,
+        showEnds:   true,
       });
     }
 
-    window.LockedInOverlay.show({ anchorEl: gridRoot, markers, linePaths });
+    window.LockedInOverlay.show({ anchorEl: gridRoot, markers: [], linePaths });
     return { ok: true };
   }
 
@@ -609,7 +605,7 @@
   window.LockedInGames.push({
     id:     'wend',
     label:  'Wend',
-    detect: () => /\/games\/wend(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('wend')(),
     run,
   });
 })();

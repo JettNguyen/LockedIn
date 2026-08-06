@@ -150,7 +150,7 @@
   window.LockedInGames.push({
     id: 'tango',
     label: 'Tango',
-    detect: () => /\/games\/tango(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('tango')(),
     run,
   });
 })();

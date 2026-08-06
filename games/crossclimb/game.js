@@ -407,7 +407,7 @@
   window.LockedInGames.push({
     id: 'crossclimb',
     label: 'CrossClimb',
-    detect: () => /\/games\/crossclimb(\/|$)/.test(location.pathname),
+    detect: () => window.LockedInDetect.gameDetector('crossclimb')(),
     run,
   });
 })();
