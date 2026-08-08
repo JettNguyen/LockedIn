@@ -257,16 +257,28 @@ window.LockedInOverlay = (function () {
     polylineEl.setAttribute('stroke-width', Math.max(3, cellSize * widthRatio));
 
     const points = displayCells.map(centerOf);
-    polylineEl.setAttribute('points', points.map((p) => `${p.x},${p.y}`).join(' '));
 
     // A ring around the first cell rather than a blob on top of it: the point is
-    // to say "start here" without hiding the letter you need to read.
+    // to say "start here" without hiding what's printed in the cell — Wend's
+    // letter, Zip's waypoint number. The line is pulled back out of that cell
+    // for the same reason, so the ring frames the marking instead of crossing it.
+    const drawnPoints = points.map((p) => ({ x: p.x, y: p.y }));
     if (startRing) {
-      startRing.setAttribute('cx', points[0].x);
-      startRing.setAttribute('cy', points[0].y);
+      const first = points[0];
+      const second = points[1];
+      const dx = second.x - first.x;
+      const dy = second.y - first.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const inset = cellSize * 0.34;
+      drawnPoints[0] = { x: first.x + (dx / len) * inset, y: first.y + (dy / len) * inset };
+
+      startRing.setAttribute('cx', first.x);
+      startRing.setAttribute('cy', first.y);
       startRing.setAttribute('r', Math.max(6, cellSize * 0.36));
-      startRing.setAttribute('stroke-width', Math.max(2, cellSize * 0.09));
+      startRing.setAttribute('stroke-width', Math.max(2, cellSize * 0.11));
     }
+
+    polylineEl.setAttribute('points', drawnPoints.map((p) => `${p.x},${p.y}`).join(' '));
 
     // Arrowhead at the far end, pointing along the last segment, so the path
     // reads in a direction instead of being an ambiguous squiggle.
@@ -402,11 +414,14 @@ window.LockedInOverlay = (function () {
         if (lp.showEnds) {
           startRing = document.createElementNS(SVG_NS, 'circle');
           startRing.setAttribute('fill', 'none');
-          startRing.setAttribute('stroke', color);
+          startRing.setAttribute('stroke', lp.startColor || color);
+          // Pulses, so "where do I start?" is answered by a glance rather than
+          // by tracing the line back to its end.
+          startRing.setAttribute('class', 'li-path-start');
           svgEl.appendChild(startRing);
 
           endArrow = document.createElementNS(SVG_NS, 'polygon');
-          endArrow.setAttribute('fill', color);
+          endArrow.setAttribute('fill', lp.endColor || color);
           svgEl.appendChild(endArrow);
         }
 

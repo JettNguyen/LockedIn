@@ -177,21 +177,43 @@
 
   // ─── Word-list utilities ──────────────────────────────────────────────────
 
+  // The word list is the only place the board says how long each word is, and
+  // every length-based strategy is switched off without it - which leaves the
+  // weakest guesswork in charge. So try progressively looser selectors rather
+  // than giving up on the exact testid.
+  const WORD_LIST_ROW_SELECTORS = [
+    '[data-testid^="wend-word-list-row-"]',
+    '[data-testid*="word-list-row"]',
+    '[data-testid*="wend"][data-testid*="row"]',
+  ];
+  const SLOT_SELECTORS = ['[data-testid*="-slot-"]', '[data-testid*="slot"]'];
+
+  function slotCount(row) {
+    for (const sel of SLOT_SELECTORS) {
+      const n = row.querySelectorAll(sel).length;
+      if (n > 0) return n;
+    }
+    return 0;
+  }
+
+  function findWordListRows() {
+    for (const sel of WORD_LIST_ROW_SELECTORS) {
+      const rows = Array.from(document.querySelectorAll(sel)).filter((r) => slotCount(r) > 0);
+      if (rows.length) return rows;
+    }
+    return [];
+  }
+
   // Returns [6, 7, 9, ...] — slot count per word-list row.
   function getExpectedWordLengths() {
-    const rows = document.querySelectorAll('[data-testid^="wend-word-list-row-"]');
-    return Array.from(rows)
-      .map((row) => row.querySelectorAll('[data-testid*="-slot-"]').length)
-      .filter((n) => n > 0);
+    return findWordListRows().map(slotCount);
   }
 
   // Map word length → available row elements (multiple words may share a length).
   function buildWordListRowsByLength() {
-    const rows = document.querySelectorAll('[data-testid^="wend-word-list-row-"]');
     const map = new Map();
-    for (const row of rows) {
-      const len = row.querySelectorAll('[data-testid*="-slot-"]').length;
-      if (!len) continue;
+    for (const row of findWordListRows()) {
+      const len = slotCount(row);
       if (!map.has(len)) map.set(len, []);
       map.get(len).push(row);
     }
@@ -417,6 +439,38 @@
     const expectedLengths = getExpectedWordLengths();
     let words = null;
 
+    // Whatever produced a grouping, it only counts if it could actually be a set
+    // of Wend words: each one a chain of orthogonally-adjacent cells, together
+    // covering every letter exactly once. Checking the shape of the answer
+    // rather than trusting the strategy that made it is what stops a plausible-
+    // looking-but-impossible grouping reaching the screen - a path that teleports
+    // across the board is not a word, whichever code path proposed it.
+    const isUsable = (candidate) => {
+      if (!candidate || !candidate.length) return false;
+
+      const seen = new Set();
+      for (const { cells: group } of candidate) {
+        if (group.length < 2) return false;
+        for (let i = 0; i < group.length; i++) {
+          if (seen.has(group[i].idx)) return false; // two words claiming one cell
+          seen.add(group[i].idx);
+          if (i === 0) continue;
+          const a = group[i - 1].idx;
+          const b = group[i].idx;
+          const step = Math.abs(Math.floor(a / n) - Math.floor(b / n)) + Math.abs((a % n) - (b % n));
+          if (step !== 1) return false; // not a step to a neighbouring cell
+        }
+      }
+      if (seen.size !== cells.length) return false; // letters left over
+
+      if (expectedLengths.length) {
+        const got = candidate.map((w) => w.cells.length).sort((x, y) => x - y);
+        const want = [...expectedLengths].sort((x, y) => x - y);
+        if (JSON.stringify(got) !== JSON.stringify(want)) return false;
+      }
+      return true;
+    };
+
     // ── Strategy 0: the board's own position numbering ───────────────────
     // Exact when it applies, so it goes first.
     {
@@ -425,6 +479,8 @@
         words = byPosition.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
       }
     }
+
+    if (!isUsable(words)) words = null;
 
     // ── Strategy 1: colour grouping ──────────────────────────────────────
     if (!words && cells.some((c) => c.colorKey !== null)) {
@@ -463,6 +519,8 @@
       }
     }
 
+    if (!isUsable(words)) words = null;
+
     // ── Strategy 1b: CSS custom property scan ────────────────────────────
     // The word colour may be encoded in a CSS custom property (--xxxx: #color)
     // set by the cell's class and inherited by child elements. We scan all
@@ -500,6 +558,8 @@
       }
     }
 
+    if (!isUsable(words)) words = null;
+
     // ── Strategy 2: backtracking solver ──────────────────────────────────
     // Length alone leaves a huge number of valid partitions and picks an
     // arbitrary one, which is how this ended up drawing paths that spelled
@@ -523,9 +583,18 @@
       }
     }
 
-    // ── Last resort: single group (at least shows the grid) ───────────────
+    if (!isUsable(words)) words = null;
+
+    // There used to be a "last resort" here that lumped every letter on the
+    // board into one group. It didn't show the grid, it drew a single line
+    // through all 30-odd letters in scrape order - jumping diagonally across
+    // the board wherever the row index wrapped, since cells in index order
+    // aren't neighbours. Better to admit we couldn't read the board.
     if (!words) {
-      words = [{ color: PALETTE[0], cells }];
+      return {
+        ok: false,
+        error: 'Could not work out which letters belong to which word on this board.',
+      };
     }
 
     return { ok: true, words };
@@ -586,12 +655,20 @@
     const gridRoot = findGrid();
     if (!gridRoot) return 'No Wend grid on this page.';
     const dictionary = await loadDictionary();
+    const lengths = getExpectedWordLengths();
     const scrape = scrapeBoard(gridRoot, dictionary);
-    if (!scrape.ok) return scrape.error;
+    if (!scrape.ok) {
+      return [
+        `word-list rows found: ${findWordListRows().length}`,
+        `expected word lengths: [${lengths.join(', ')}]  ${lengths.length ? '' : '<- EMPTY: every length-based strategy is disabled'}`,
+        `scrape failed: ${scrape.error}`,
+      ].join('\n');
+    }
 
     const words = scrape.words.map(({ cells }) => cells.map((c) => c.letter).join(''));
     return [
-      `expected word lengths: [${getExpectedWordLengths().join(', ')}]`,
+      `word-list rows found: ${findWordListRows().length}`,
+      `expected word lengths: [${lengths.join(', ')}]`,
       `dictionary: ${dictionary ? `${dictionary.size} words` : 'FAILED TO LOAD'}`,
       `words found: ${words.join(', ')}`,
       `all in dictionary: ${dictionary ? words.every((w) => dictionary.has(w.toLowerCase())) : 'n/a'}`,

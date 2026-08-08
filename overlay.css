@@ -87,6 +87,13 @@
   overflow: visible;
 }
 
+/* The ring marking where a path starts. It pulses because "where do I start?"
+ * should be answerable at a glance - on a board where the whole solution is one
+ * continuous line, a static ring in the line's own colour is easy to miss. */
+#lockedin-solver-overlay .li-path-start {
+  animation: li-breathe 1.8s ease-in-out infinite;
+}
+
 @keyframes li-breathe {
   0%,
   100% {

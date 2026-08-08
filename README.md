@@ -16,7 +16,7 @@ out of the overlay so you always know what's left.
 | **Queens** | Black square marker on each cell where a queen goes |
 | **Tango** | Sun/moon icon on each cell that needs a symbol |
 | **Mini Sudoku** | Digit on each empty cell |
-| **Zip** | Green line tracing the full path from start to finish |
+| **Zip** | Green line tracing the path, with a pulsing gold ring around the starting cell and an arrowhead at the finish |
 | **Patches** | Colored region outlines, with the cells you haven't placed yet hatched |
 | **Wend** | Thin colored path per word, ringed start cell and an arrowhead showing direction — drawn around the letters so the board stays readable |
 | **CrossClimb** | Numbered position badges showing the drag order, worked out from the rungs you've filled in |

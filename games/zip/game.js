@@ -238,7 +238,19 @@
     window.LockedInOverlay.show({
       anchorEl: gridRoot,
       markers: [],
-      linePath: { cells, color: '#22c55e', isDrawn: isCellDrawn },
+      // showEnds rings cell 1 and puts an arrowhead on the last cell. Without it
+      // the solution is one unbroken green line and there is nothing to say
+      // which end of it you're meant to start from - and the line was thick
+      // enough to bury the "1" printed in the cell. The ring frames that number
+      // instead of covering it. As you draw, the ring advances to the head of
+      // the undrawn remainder, so it keeps pointing at where to carry on from.
+      linePath: {
+        cells,
+        color: '#22c55e',
+        isDrawn: isCellDrawn,
+        showEnds: true,
+        startColor: '#f5c542',
+      },
     });
     return { ok: true };
   }
