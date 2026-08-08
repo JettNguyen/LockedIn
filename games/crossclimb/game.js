@@ -12,8 +12,15 @@
 // PRIMARY: read the answer off the page. LinkedIn hydrates its SPA from JSON
 // parked in <code> elements, and the CrossClimb payload carries the whole
 // puzzle - every rung's `word`, its `clue`, and a `solutionRungIndex` giving
-// its place in the ladder. Matching each payload rung to a row by clue text
-// solves a completely blank board outright.
+// its place in the ladder. That solves a completely blank board outright, with
+// nothing typed in.
+//
+// Matching a payload rung to a row on screen goes by clue text where it can,
+// but the board shows its clues one at a time in a carousel, so usually only
+// the focused rung's clue is in the DOM at all - which is why the first attempt
+// at this quietly did nothing and left you looking at "too many ladders still
+// fit". The fallback is the order LinkedIn lists the rungs in, cross-checked
+// against whatever clue IS on screen.
 //
 // That is only trusted once the words independently chain into a single valid
 // ladder, because the key names are LinkedIn's and will eventually move. When
@@ -293,6 +300,25 @@
     );
   }
 
+  // ── Overlay ────────────────────────────────────────────────────────────────
+
+  function showBadges(grid, middleRows, position, word, typed) {
+    const markers = [];
+    for (let i = 0; i < middleRows.length; i++) {
+      if (!position[i]) continue; // genuinely ambiguous - say nothing rather than guess
+      const row = middleRows[i];
+      const pos = position[i];
+      const anchorEl = row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl);
+      markers.push({
+        cellEl: anchorEl,
+        html: badgeHtml(pos, typed[i] ? '' : (word[i] || '')),
+        color: POSITION_COLORS[(pos - 1) % POSITION_COLORS.length],
+        isFilled: () => currentPositionOf(row.rowEl) === pos,
+      });
+    }
+    window.LockedInOverlay.show({ anchorEl: grid, markers });
+  }
+
   // ── Entry point ────────────────────────────────────────────────────────────
 
   async function run() {
@@ -328,31 +354,43 @@
     let known = typed;
     let payloadTop = null;
     let payloadBottom = null;
+    let payloadPositions = null;
     let fromPayload = false;
     {
       const chain = embedded.length >= middleRows.length ? chainWords(embedded.map((e) => e.word)) : null;
-      const matched = chain ? wordsForMiddleRows(middleRows, embedded) : null;
+      const matched = chain ? rungsToRows(rows, middleRows, embedded) : null;
       if (matched) {
         known = matched;
         fromPayload = true;
-
-        // The chain runs through all seven rungs, so its two ends are the
-        // locked top and bottom. Naming them settles the one thing the ladder
-        // rule alone can never settle: which way up it goes. solutionRungIndex
-        // says which end is the top; without it the chain is still symmetric
-        // and the existing orientation heuristic takes over.
         const indexOf = new Map(embedded.map((e) => [e.word, e.index]));
+
+        // solutionRungIndex is the payload saying outright where each rung
+        // belongs, so rank the matched words by it and the drag order is done -
+        // no ladder search, no orientation guess, nothing left to deduce.
+        const indices = matched.map((w) => indexOf.get(w));
+        if (indices.every(Number.isInteger) && new Set(indices).size === indices.length) {
+          const ranked = [...indices].sort((a, b) => a - b);
+          payloadPositions = indices.map((i) => ranked.indexOf(i) + 1);
+        }
+
+        // If it didn't, the chain's two ends are still the locked top and
+        // bottom rungs, and naming them settles the one thing the ladder rule
+        // can never settle on its own: which way up it goes.
         const first = indexOf.get(chain[0]);
         const last = indexOf.get(chain[chain.length - 1]);
-        const oriented =
-          Number.isInteger(first) && Number.isInteger(last) && first !== last
-            ? (first < last ? chain : [...chain].reverse())
-            : null;
-        if (oriented && oriented.length === middleRows.length + 2) {
+        if (Number.isInteger(first) && Number.isInteger(last) && first !== last &&
+            chain.length === middleRows.length + 2) {
+          const oriented = first < last ? chain : [...chain].reverse();
           payloadTop = oriented[0];
           payloadBottom = oriented[oriented.length - 1];
         }
       }
+    }
+
+    // The page told us both the words and where they go: draw it.
+    if (payloadPositions) {
+      showBadges(grid, middleRows, payloadPositions, known, typed);
+      return { ok: true };
     }
     const filledCount = known.filter(Boolean).length;
 
@@ -406,21 +444,7 @@
       };
     }
 
-    const markers = [];
-    for (let i = 0; i < middleRows.length; i++) {
-      if (!position[i]) continue; // genuinely ambiguous - say nothing rather than guess
-      const row = middleRows[i];
-      const pos = position[i];
-      const anchorEl = row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl);
-      markers.push({
-        cellEl: anchorEl,
-        html: badgeHtml(pos, typed[i] ? '' : (known[i] || word[i])),
-        color: POSITION_COLORS[(pos - 1) % POSITION_COLORS.length],
-        isFilled: () => currentPositionOf(row.rowEl) === pos,
-      });
-    }
-
-    window.LockedInOverlay.show({ anchorEl: grid, markers });
+    showBadges(grid, middleRows, position, word, typed);
     return { ok: true };
   }
 
@@ -586,6 +610,10 @@
   function scrapeEmbeddedRungs(wordLength) {
     if (!wordLength) return [];
     const shaped = new RegExp(`^[A-Za-z]{${wordLength}}$`);
+    // Insertion-ordered, and the walk is depth-first over the payload, so this
+    // preserves the order LinkedIn lists the rungs in - which is the order they
+    // appear on screen. That ordering is the mapping of last resort when the
+    // clues aren't all readable (see rungsToRows).
     const byWord = new Map();
 
     for (const node of payloadNodes()) {
@@ -695,6 +723,45 @@
     return words;
   }
 
+  /**
+   * Match payload rungs to the rows on screen.
+   *
+   * Clue text is the honest link, but CrossClimb shows its clues one at a time
+   * in a carousel, so usually only the focused rung's clue is in the DOM at all
+   * and matching all five is impossible without clicking through the board.
+   *
+   * The fallback is order: LinkedIn lists the rungs in the order it renders
+   * them, which is why each carries a separate solutionRungIndex saying where
+   * it actually belongs. Whatever clue IS on screen then serves as a check on
+   * that assumption - if it names a different rung than the ordering implies,
+   * the ordering is wrong and we take nothing rather than mislabel every row.
+   *
+   * @returns {string[]|null} one word per middle row, or null.
+   */
+  function rungsToRows(allRows, middleRows, entries) {
+    const byClue = wordsForMiddleRows(middleRows, entries);
+    if (byClue) return byClue;
+
+    let slice = null;
+    if (entries.length === allRows.length) {
+      const start = allRows.indexOf(middleRows[0]);
+      slice = entries.slice(start, start + middleRows.length);
+    } else if (entries.length === middleRows.length) {
+      slice = entries;
+    }
+    if (!slice || slice.length !== middleRows.length) return null;
+
+    // Cross-check against any clue the page is currently showing.
+    for (let i = 0; i < middleRows.length; i++) {
+      const shown = normalizeClue(domClueFor(middleRows[i].id));
+      if (!shown) continue;
+      const expected = normalizeClue(slice[i].clue);
+      if (expected && shown !== expected) return null;
+    }
+
+    return slice.map((entry) => entry.word);
+  }
+
   async function debugDump() {
     const grid = findGrid();
     if (!grid) return describePage();
@@ -715,7 +782,7 @@
       `typed so far: ${known.map((w) => w || '????').join(' ')}`,
       `answers read from the page: ${embedded.length ? embedded.map((e) => e.word).join(', ') : '(none found)'}`,
       `they chain into a ladder: ${chain ? chain.join(' -> ') : 'no'}`,
-      `clue text matched per rung: ${chain && wordsForMiddleRows(middleRows, embedded) ? 'yes' : 'no'}`,
+      `matched to rows on screen: ${chain && rungsToRows(rows, middleRows, embedded) ? (rungsToRows(rows, middleRows, embedded) || []).join(', ') : 'no'}`,
       findEmbeddedPuzzleData(wordLength),
     ];
     for (const commonOnly of [true, false]) {
