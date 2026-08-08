@@ -428,6 +428,69 @@
     ].join('\n');
   }
 
+  // A blank CrossClimb board can't be solved from the ladder rule alone - the
+  // clues carry the information and they need world knowledge. The one thing
+  // that would change that is LinkedIn shipping the answers to the page, which
+  // it plausibly does: the SPA hydrates from JSON payloads parked in <code>
+  // elements, and Wend already turns out to embed its solution. So look, rather
+  // than assume either way.
+  //
+  // This reports the SHAPE of what it finds - which payloads mention the game
+  // and what keys they use - not the contents, so it stays small enough to
+  // paste and doesn't spray puzzle data around.
+  function findEmbeddedPuzzleData(wordLength) {
+    const MENTIONS = /crossclimb|clue|ladder|rung/i;
+    const ANSWERY = /answer|solution|word|clue|guess/i;
+    const reports = [];
+
+    const blobs = document.querySelectorAll('code, script[type="application/json"], script[type="application/ld+json"]');
+    for (const node of blobs) {
+      const text = node.textContent || '';
+      if (text.length < 40 || !MENTIONS.test(text)) continue;
+
+      const report = [`  payload ${node.id || node.tagName.toLowerCase()} (${text.length} chars)`];
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch (_) {
+        report.push('    (not valid JSON on its own)');
+      }
+
+      const keys = new Set();
+      const candidates = new Set();
+      const wordShaped = wordLength ? new RegExp(`^[A-Za-z]{${wordLength}}$`) : null;
+
+      (function walk(value, keyName, depth) {
+        if (depth > 8 || keys.size > 400) return;
+        if (Array.isArray(value)) {
+          for (const item of value) walk(item, keyName, depth + 1);
+          return;
+        }
+        if (value && typeof value === 'object') {
+          for (const [k, v] of Object.entries(value)) {
+            keys.add(k);
+            walk(v, k, depth + 1);
+          }
+          return;
+        }
+        if (typeof value === 'string' && wordShaped && wordShaped.test(value) && ANSWERY.test(keyName || '')) {
+          candidates.add(`${keyName}=${value}`);
+        }
+      })(parsed, '', 0);
+
+      const interesting = [...keys].filter((k) => ANSWERY.test(k) || MENTIONS.test(k));
+      report.push(`    keys mentioning answer/word/clue: ${interesting.slice(0, 25).join(', ') || '(none)'}`);
+      if (candidates.size) {
+        report.push(`    ${wordLength}-letter strings under those keys: ${[...candidates].slice(0, 12).join(', ')}`);
+      }
+      reports.push(report.join('\n'));
+      if (reports.length >= 6) break;
+    }
+
+    if (!reports.length) return 'embedded puzzle data: none of the page payloads mention this game';
+    return ['embedded puzzle data — payloads mentioning this game:', ...reports].join('\n');
+  }
+
   async function debugDump() {
     const grid = findGrid();
     if (!grid) return describePage();
@@ -442,7 +505,10 @@
     const wordLength = middleRows.map((r) => r.slots).find((n) => n > 0);
     if (!wordLength) return 'Could not tell how long the answers are.';
 
-    const lines = [`typed so far: ${known.map((w) => w || '????').join(' ')}`];
+    const lines = [
+      `typed so far: ${known.map((w) => w || '????').join(' ')}`,
+      findEmbeddedPuzzleData(wordLength),
+    ];
     for (const commonOnly of [true, false]) {
       const vocabulary = await window.LockedInWords.ofLength(wordLength, { commonOnly });
       if (!vocabulary) { lines.push('word list failed to load'); break; }
