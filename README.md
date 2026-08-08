@@ -108,7 +108,7 @@ shared/
   detect.js             Maps a URL to a game; loose about where the slug sits in the path
   overlay.js            Game-agnostic overlay renderer used by every game module
   wordlist.js           Lazy loader for the two word lists below
-  words.txt             Webster's Second (public domain) — is this a real word?
+  words.txt             ~359k words (Webster's Second + dwyl/english-words) — is this a real word?
   common-words.txt      ~9.4k most frequent English words — which real word is meant?
 games/
   queens/

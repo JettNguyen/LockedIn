@@ -6,11 +6,19 @@
 //
 // Two lists, because they answer different questions:
 //
-//   words.txt         Webster's Second (/usr/share/dict/words; its 1934
-//                     copyright has lapsed). ~175k entries, exhaustive to the
-//                     point of absurdity - it will happily tell you "aalii" is
-//                     a word. That breadth is right for *validating* something
-//                     the board already implies, and wrong for guessing.
+//   words.txt         ~359k entries: Webster's Second (/usr/share/dict/words,
+//                     1934 copyright lapsed) merged with dwyl/english-words and
+//                     the frequency list below. Exhaustive to the point of
+//                     absurdity - it will happily tell you "aalii" is a word -
+//                     which is right for *validating* something the board
+//                     already implies and wrong for guessing.
+//
+//                     Webster's alone was not enough, and the failure was
+//                     invisible: a Wend board whose answer was JOYSTICK simply
+//                     reported that it couldn't be read, because a 1934
+//                     dictionary has no joysticks. Anything modern - EMAIL,
+//                     BLOG - failed the same silent way, so the list has to
+//                     cover present-day English, not just a lot of English.
 //
 //   common-words.txt  The ~9.4k most frequent English words. Puzzle answers are
 //                     drawn from words people actually use, so searching this
