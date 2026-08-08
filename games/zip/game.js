@@ -344,5 +344,6 @@
     label: 'Zip',
     detect: () => window.LockedInDetect.gameDetector('zip')(),
     run,
+    diagnose: debugDump,
   });
 })();

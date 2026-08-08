@@ -702,7 +702,7 @@
 
     if (!isUsable(words)) words = null;
 
-    stage = 'strategy 2 (backtracking solver)';
+    stage = 'strategy 2a (fit dictionary words onto board)';
     // ── Strategy 2: backtracking solver ──────────────────────────────────
     // Length alone leaves a huge number of valid partitions and picks an
     // arbitrary one, which is how this ended up drawing paths that spelled
@@ -721,6 +721,7 @@
 
     if (!isUsable(words)) words = null;
 
+    stage = 'strategy 2b (carve paths by length)';
     if (!words && expectedLengths.length) {
       const startIdxs = new Set(cells.filter((c) => c.isStart).map((c) => c.idx));
       const attempts = [];
@@ -903,5 +904,6 @@
     label:  'Wend',
     detect: () => window.LockedInDetect.gameDetector('wend')(),
     run,
+    diagnose: async () => `${await debugBoard()}\n\n${await debugDump()}`,
   });
 })();

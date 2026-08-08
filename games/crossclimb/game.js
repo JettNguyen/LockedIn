@@ -432,5 +432,6 @@
     label: 'CrossClimb',
     detect: () => window.LockedInDetect.gameDetector('crossclimb')(),
     run,
+    diagnose: debugDump,
   });
 })();

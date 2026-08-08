@@ -31,6 +31,19 @@ out of the overlay so you always know what's left.
 Or click the extension icon and hit **Solve** if you want to trigger it
 manually (e.g. after dismissing a previous overlay).
 
+## When something goes wrong
+
+Click the extension icon and hit **Copy diagnostics**. That puts a report on
+your clipboard: which game matched the URL, why the last solve attempt ended
+the way it did, and — for Zip, Wend and CrossClimb — what the scraper actually
+read off the board. Paste it into a bug report and it's usually enough to
+locate the problem without a back-and-forth.
+
+The same reports are on `window.LockedInDebug` (`status()`, `zip()`, `wend()`,
+`wendBoard()`, `crossclimb()`), but note those live in the content script's
+isolated world: the browser console won't see them until you switch its
+JavaScript context from `top` to `LockedIn`. The button avoids that entirely.
+
 ## How it works
 
 Every game follows the same four-step shape:

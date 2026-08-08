@@ -6,7 +6,7 @@
     <style>
       body {
         margin: 0;
-        width: 220px;
+        width: 240px;
         background: #1b1f23;
         color: #f3f6f8;
         font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -47,6 +47,26 @@
         cursor: default;
       }
 
+      #diag-btn {
+        padding: 6px 12px;
+        border: 1px solid #3a4047;
+        border-radius: 16px;
+        background: transparent;
+        color: #a6acb3;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      #diag-btn:hover {
+        border-color: #5a6068;
+        color: #f3f6f8;
+      }
+
+      #diag-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
       #status {
         margin: 0;
         font-size: 12px;
@@ -60,6 +80,7 @@
     <div class="qs-popup">
       <h1>LockedIn</h1>
       <button id="solve-btn" type="button">Solve</button>
+      <button id="diag-btn" type="button">Copy diagnostics</button>
       <p id="status">Idle</p>
     </div>
     <script src="popup.js"></script>

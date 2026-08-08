@@ -160,7 +160,48 @@
     }
   }
 
+  // Everything worth knowing when a game misbehaves, in one block of text:
+  // which game matched, why the last solve attempt ended the way it did, and
+  // whatever that game can say about the board it scraped.
+  async function buildDiagnostics() {
+    const games = window.LockedInGames || [];
+    const active = games.filter((g) => g.detect());
+    const lines = [
+      `url:               ${location.href}`,
+      `extension version: ${chrome.runtime.getManifest().version}`,
+      `games registered:  ${games.map((g) => g.id).join(', ') || '(none — the content scripts did not all load)'}`,
+      `detect() matches:  ${active.map((g) => g.id).join(', ') || '(NONE — this is why nothing happens)'}`,
+      `overlay showing:   ${window.LockedInOverlay.isActive()}`,
+      `marked solved:     ${solvedOnThisPage}`,
+      `solve attempts:    ${attempts}`,
+      `last outcome:      ${lastOutcome}`,
+      `dom revision:      ${domRevision} (last scraped at ${scrapedRevision})`,
+      `consecutive fails: ${consecutiveFailures}`,
+    ];
+
+    for (const game of active) {
+      lines.push('', `--- ${game.label} ---`);
+      if (typeof game.diagnose !== 'function') {
+        lines.push('(this game has no board report)');
+        continue;
+      }
+      try {
+        lines.push(await Promise.resolve(game.diagnose()));
+      } catch (err) {
+        lines.push(`report threw: ${err && err.message ? err.message : err}`);
+      }
+    }
+    return lines.join('\n');
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message && message.type === 'LOCKEDIN_DIAGNOSTICS') {
+      buildDiagnostics()
+        .then((report) => sendResponse({ report }))
+        .catch((err) => sendResponse({ report: `Diagnostics failed: ${err && err.message ? err.message : err}` }));
+      return true;
+    }
+
     if (!message || message.type !== 'LOCKEDIN_SOLVE') return;
 
     solveAndRender({ force: true })

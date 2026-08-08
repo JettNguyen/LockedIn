@@ -1,6 +1,7 @@
 // popup.js
 
 const solveBtn = document.getElementById('solve-btn');
+const diagBtn = document.getElementById('diag-btn');
 const statusEl = document.getElementById('status');
 
 function setStatus(text) {
@@ -12,9 +13,9 @@ async function getActiveTab() {
   return tab;
 }
 
-function sendSolveMessage(tabId) {
+function sendMessage(tabId, type) {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, { type: 'LOCKEDIN_SOLVE' }, (response) => {
+    chrome.tabs.sendMessage(tabId, { type }, (response) => {
       if (chrome.runtime.lastError) {
         reject(chrome.runtime.lastError);
         return;
@@ -23,6 +24,43 @@ function sendSolveMessage(tabId) {
     });
   });
 }
+
+const sendSolveMessage = (tabId) => sendMessage(tabId, 'LOCKEDIN_SOLVE');
+
+// The debug helpers live in the content script's isolated world, so typing
+// LockedInDebug into the page console just reports "not defined" unless you
+// first switch the console's context to the extension. This button skips all
+// that: it runs the report where it actually lives and puts it on the
+// clipboard, ready to paste.
+diagBtn.addEventListener('click', async () => {
+  setStatus('Collecting…');
+  diagBtn.disabled = true;
+  try {
+    const tab = await getActiveTab();
+    if (!tab || !tab.id) {
+      setStatus('Error: no active tab.');
+      return;
+    }
+
+    let response;
+    try {
+      response = await sendMessage(tab.id, 'LOCKEDIN_DIAGNOSTICS');
+    } catch {
+      const [{ js, css }] = chrome.runtime.getManifest().content_scripts;
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: js });
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: css });
+      response = await sendMessage(tab.id, 'LOCKEDIN_DIAGNOSTICS');
+    }
+
+    const report = (response && response.report) || 'No report came back from the page.';
+    await navigator.clipboard.writeText(report);
+    setStatus(`Copied ${report.split('\n').length} lines to the clipboard.`);
+  } catch (err) {
+    setStatus(`Error: ${err && err.message ? err.message : err}`);
+  } finally {
+    diagBtn.disabled = false;
+  }
+});
 
 solveBtn.addEventListener('click', async () => {
   setStatus('Solving...');
