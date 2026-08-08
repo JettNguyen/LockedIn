@@ -4,19 +4,22 @@
 // is [data-testid="interactive-grid"][data-trail-grid]; cells are direct
 // children with data-testid="cell-N" and data-cell-idx for their position.
 //
-// WALLS: a cell with a wall on one of its sides carries an extra child div
-// (no data-testid, no data-cell-content) that paints the wall bar. LinkedIn
-// identifies those divs only by hashed CSS-module class names, which rotate on
-// every deploy - and the previous mapping here had TWO hashes pointing at
-// "bottom" and nothing pointing at "top", so a wall LinkedIn encoded on the
-// lower cell got recorded one row too low. The solver then walked straight
-// through the real wall while dodging an imaginary one.
+// WALLS are read by GEOMETRY - measuring the bars LinkedIn actually paints
+// against the grid's own cell rects - because both of the alternatives failed
+// in the same way, by silently under-reporting walls and letting the solver
+// walk through them:
 //
-// So walls are now read by GEOMETRY: measure each candidate child against its
-// cell and see which edge it hugs. That can't be fooled by a hash rotation and
-// it can always tell a top wall from a bottom one. The hashed class names are
-// kept purely as a fallback for the case where the wall markup stops looking
-// like a bar (see run()).
+//   • The hashed CSS-module class names rotate on every deploy, and the mapping
+//     here once had TWO hashes pointing at "bottom" and none at "top", so a
+//     wall encoded on the lower cell landed a row too low.
+//   • Measuring each cell's own children missed more: LinkedIn draws a run of
+//     wall as ONE element spanning several cells, so only whichever cell
+//     happened to own it got a wall, and the path crossed the rest of the run.
+//
+// So the scan is grid-wide (detectWallsAcrossGrid): find every thin bar drawn
+// anywhere inside the grid and block each cell boundary it actually covers,
+// however many cells it spans. The class names remain as a fallback for markup
+// that stops looking like a bar at all (see run()).
 
 (function () {
   const SIDES = ['top', 'right', 'bottom', 'left'];
@@ -39,11 +42,6 @@
     ['a1d68cc0', 'top'],
   ];
 
-  // Geometry thresholds, all as fractions of the cell's own size so they hold
-  // at any board size / zoom level.
-  const BAR_MAX_THICKNESS = 0.4; // a wall bar is thin across the edge it sits on
-  const BAR_MIN_LENGTH = 0.55; // ...and spans most of that edge
-  const BAR_MAX_OFFSET = 0.25; // ...and is centered on it
   const MIN_WALL_PX = 2; // 1px lines are ordinary grid rules, not walls
 
   function findGrid() {
@@ -58,33 +56,6 @@
     const label = cellEl.getAttribute('aria-label') || '';
     const match = label.match(/^Number\s+(\d+)$/i);
     return match ? Number(match[1]) : null;
-  }
-
-  // A wall painted as its own element: a thin bar lying along one edge of the
-  // cell. getBoundingClientRect() includes borders, so this catches both a
-  // background-filled sliver and a hairline div with a thick border.
-  function detectWallSideByGeometry(cellRect, el) {
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return null;
-
-    const cw = cellRect.width;
-    const ch = cellRect.height;
-
-    // Vertical bar → left or right wall.
-    if (r.width <= cw * BAR_MAX_THICKNESS && r.width >= MIN_WALL_PX && r.height >= ch * BAR_MIN_LENGTH) {
-      const cx = r.left + r.width / 2;
-      if (Math.abs(cx - cellRect.left) <= cw * BAR_MAX_OFFSET) return 'left';
-      if (Math.abs(cx - cellRect.right) <= cw * BAR_MAX_OFFSET) return 'right';
-    }
-
-    // Horizontal bar → top or bottom wall.
-    if (r.height <= ch * BAR_MAX_THICKNESS && r.height >= MIN_WALL_PX && r.width >= cw * BAR_MIN_LENGTH) {
-      const cy = r.top + r.height / 2;
-      if (Math.abs(cy - cellRect.top) <= ch * BAR_MAX_OFFSET) return 'top';
-      if (Math.abs(cy - cellRect.bottom) <= ch * BAR_MAX_OFFSET) return 'bottom';
-    }
-
-    return null;
   }
 
   // A wall painted as a one-sided border on an element that covers the whole
@@ -102,12 +73,11 @@
     return found;
   }
 
-  // Two independent readings of one cell's walls. run() picks between them.
-  function parseWalls(cellEl) {
+  // Per-cell reading: hashed class names, plus a wall drawn as a one-sided
+  // border on an element filling the cell (which has no bar to measure).
+  function parseCellWalls(cellEl) {
     const geometric = emptyWalls();
     const byClass = emptyWalls();
-    const cellRect = cellEl.getBoundingClientRect();
-    const measurable = cellRect.width > 0 && cellRect.height > 0;
 
     for (const child of cellEl.children) {
       if (child.dataset.testid === 'filled-cell') continue;
@@ -121,13 +91,81 @@
         if (cls.includes(hash)) byClass[side] = true;
       }
 
-      if (measurable) {
-        const side = detectWallSideByGeometry(cellRect, child) || detectWallSideByBorder(child);
-        if (side) geometric[side] = true;
-      }
+      const side = detectWallSideByBorder(child);
+      if (side) geometric[side] = true;
     }
 
     return { geometric, byClass };
+  }
+
+  const isCellEl = (el) => /^cell-\d+$/.test((el.dataset && el.dataset.testid) || '');
+
+  // Grid-wide wall scan.
+  //
+  // This used to run per cell, over each cell's own children, and that is what
+  // let the solver keep cutting through walls: LinkedIn draws a run of wall as
+  // ONE element spanning several cells, so only whichever cell happened to own
+  // that element got a wall recorded and every other cell along the run was
+  // left open. A long barrier would be honoured at one point and walked
+  // straight through everywhere else.
+  //
+  // So measure every bar drawn anywhere inside the grid against the grid's own
+  // geometry, and block each cell boundary the bar actually covers - however
+  // many cells it spans and whichever cell it happens to hang off.
+  function detectWallsAcrossGrid(gridRoot, cellElements, n, walls) {
+    const rects = cellElements.map((row) => row.map((el) => el.getBoundingClientRect()));
+    const cellW = rects[0][0].width;
+    const cellH = rects[0][0].height;
+    if (!(cellW > 0) || !(cellH > 0)) return;
+    const cellMin = Math.min(cellW, cellH);
+
+    // Candidate bars: thin on one axis, long on the other.
+    const bars = [];
+    for (const el of gridRoot.querySelectorAll('*')) {
+      if (isCellEl(el)) continue;
+      if (el.dataset && (el.dataset.testid === 'filled-cell' || el.dataset.cellContent)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      if (r.width < cellW * 0.5 && r.height >= cellH * 0.5) bars.push({ r, vertical: true, thickness: r.width });
+      else if (r.height < cellH * 0.5 && r.width >= cellW * 0.5) bars.push({ r, vertical: false, thickness: r.height });
+    }
+    if (!bars.length) return;
+
+    // Grid rules are hairlines and walls are substantial, so keep the thick
+    // ones. Both an absolute floor and a share of the thickest bar, so this
+    // doesn't start calling 1px rules walls on a board that has none.
+    const thickest = Math.max(...bars.map((b) => b.thickness));
+    const minThickness = Math.max(MIN_WALL_PX, cellMin * 0.05, thickest * 0.5);
+
+    for (const bar of bars) {
+      if (bar.thickness < minThickness) continue;
+
+      if (bar.vertical) {
+        const x = bar.r.left + bar.r.width / 2;
+        for (let c = 0; c < n - 1; c++) {
+          const boundary = (rects[0][c].right + rects[0][c + 1].left) / 2;
+          if (Math.abs(x - boundary) > cellW * 0.3) continue;
+          for (let r = 0; r < n; r++) {
+            const overlap = Math.min(bar.r.bottom, rects[r][c].bottom) - Math.max(bar.r.top, rects[r][c].top);
+            if (overlap < cellH * 0.5) continue;
+            walls[r][c].right = true;
+            walls[r][c + 1].left = true;
+          }
+        }
+      } else {
+        const y = bar.r.top + bar.r.height / 2;
+        for (let r = 0; r < n - 1; r++) {
+          const boundary = (rects[r][0].bottom + rects[r + 1][0].top) / 2;
+          if (Math.abs(y - boundary) > cellH * 0.3) continue;
+          for (let c = 0; c < n; c++) {
+            const overlap = Math.min(bar.r.right, rects[r][c].right) - Math.max(bar.r.left, rects[r][c].left);
+            if (overlap < cellW * 0.5) continue;
+            walls[r][c].bottom = true;
+            walls[r + 1][c].top = true;
+          }
+        }
+      }
+    }
   }
 
   function scrapeBoard(gridRoot) {
@@ -163,7 +201,7 @@
       }
       cellElements[row][col] = cellEl;
 
-      const { geometric, byClass } = parseWalls(cellEl);
+      const { geometric, byClass } = parseCellWalls(cellEl);
       wallsGeometric[row][col] = geometric;
       wallsByClass[row][col] = byClass;
 
@@ -181,6 +219,10 @@
         }
       }
     }
+
+    // Now that every cell is known, sweep the grid for wall bars spanning more
+    // than one cell — the per-cell pass above can't see those.
+    detectWallsAcrossGrid(gridRoot, cellElements, n, wallsGeometric);
 
     if (![...waypoints.values()].includes(1)) {
       return { ok: false, error: 'Could not find the starting cell (numbered 1).' };

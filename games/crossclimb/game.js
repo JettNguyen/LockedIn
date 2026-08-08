@@ -39,8 +39,31 @@
 
   // ── DOM helpers ────────────────────────────────────────────────────────────
 
+  // The smallest element containing every match for `selector`.
+  function commonAncestorOf(selector) {
+    const found = document.querySelectorAll(selector);
+    if (!found.length) return null;
+    let node = found[0].parentElement;
+    while (node && node !== document.body) {
+      if (node.querySelectorAll(selector).length === found.length) return node;
+      node = node.parentElement;
+    }
+    return found[0].parentElement || null;
+  }
+
   function findGrid() {
-    return document.querySelector('.crossclimb__grid');
+    // `.crossclimb__grid` is one of LinkedIn's own class names and it has gone
+    // missing at least once, which takes the whole game down with a "could not
+    // find the grid" that has nothing to do with the puzzle. The rungs
+    // themselves are marked with data attributes, so fall back to whatever
+    // element contains all of them.
+    return (
+      document.querySelector('.crossclimb__grid') ||
+      document.querySelector('[class*="crossclimb"][class*="grid"]') ||
+      commonAncestorOf('[data-guess-id]') ||
+      commonAncestorOf('[data-crossclimb-guess-input-idx]') ||
+      document.querySelector('[class*="crossclimb"]')
+    );
   }
 
   function guessInputs(rowEl) {

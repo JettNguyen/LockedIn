@@ -292,6 +292,127 @@
     return words;
   }
 
+  // ─── Word placement solver ────────────────────────────────────────────────
+  //
+  // Lay known words onto the board, rather than carving the board into paths of
+  // the right lengths and checking afterwards whether the pieces spell anything.
+  //
+  // The difference is the whole ballgame on a real board. Enumerating every
+  // connected path of a given length is brutal - a ten-letter path on a
+  // 36-letter grid has millions of candidates - so the path-first solver blew
+  // its step budget and returned nothing, which is why a perfectly ordinary
+  // board drew no overlay at all. Walking a *known* word prunes at every step
+  // instead: a partial path survives only as long as it still spells the word,
+  // so almost every branch dies on its second letter.
+  //
+  // It also fixes the direction problem for free. A path carved out of the board
+  // could be read either way round; a word laid down letter by letter knows
+  // which end it started at, so the overlay's start ring lands on the right cell.
+
+  function placementsForLength(cells, cellsByIdx, n, length, dictionary) {
+    const startsByLetter = new Map();
+    for (const cell of cells) {
+      const key = cell.letter.toLowerCase();
+      if (!startsByLetter.has(key)) startsByLetter.set(key, []);
+      startsByLetter.get(key).push(cell);
+    }
+
+    const placements = [];
+    const path = [];
+    const used = new Set();
+
+    function extend(word, pos) {
+      if (pos === word.length) {
+        placements.push(path.slice());
+        return;
+      }
+      const cur = path[path.length - 1];
+      const r = Math.floor(cur.idx / n);
+      const c = cur.idx % n;
+      for (const [dr, dc] of DIRS) {
+        const nr = r + dr;
+        const nc = c + dc;
+        if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
+        const next = cellsByIdx.get(nr * n + nc);
+        if (!next || used.has(next.idx)) continue;
+        if (next.letter.toLowerCase() !== word[pos]) continue;
+        used.add(next.idx);
+        path.push(next);
+        extend(word, pos + 1);
+        path.pop();
+        used.delete(next.idx);
+      }
+    }
+
+    for (const word of dictionary) {
+      if (word.length !== length) continue;
+      const starts = startsByLetter.get(word[0]);
+      if (!starts) continue;
+      for (const start of starts) {
+        path.length = 0;
+        used.clear();
+        path.push(start);
+        used.add(start.idx);
+        extend(word, 1);
+      }
+    }
+    return placements;
+  }
+
+  // Exact cover: one placement per word slot, together using every letter once.
+  function coverBoardWithWords(cells, lengths, placementsByLength) {
+    const slots = [...lengths].sort(
+      (a, b) => placementsByLength.get(a).length - placementsByLength.get(b).length
+    );
+    const used = new Set();
+    const chosen = [];
+    let steps = 0;
+
+    function rec(i) {
+      if (++steps > COVER_BUDGET) throw new RangeError('wend-cover-budget');
+      if (i === slots.length) return used.size === cells.length;
+      for (const placement of placementsByLength.get(slots[i])) {
+        let clash = false;
+        for (const cell of placement) {
+          if (used.has(cell.idx)) { clash = true; break; }
+        }
+        if (clash) continue;
+        for (const cell of placement) used.add(cell.idx);
+        chosen.push(placement);
+        if (rec(i + 1)) return true;
+        chosen.pop();
+        for (const cell of placement) used.delete(cell.idx);
+      }
+      return false;
+    }
+
+    try {
+      return rec(0) ? chosen : null;
+    } catch (err) {
+      if (err instanceof RangeError && err.message === 'wend-cover-budget') return null;
+      throw err;
+    }
+  }
+
+  function solveByWordPlacement(cells, cellsByIdx, n, expectedLengths, dictionary, startIdxs) {
+    if (!dictionary || !expectedLengths.length) return null;
+    const useStarts = startIdxs && startIdxs.size === expectedLengths.length;
+
+    const placementsByLength = new Map();
+    for (const length of new Set(expectedLengths)) {
+      let placements = placementsForLength(cells, cellsByIdx, n, length, dictionary);
+      if (useStarts) {
+        placements = placements.filter(
+          (p) => startIdxs.has(p[0].idx) && !p.slice(1).some((cell) => startIdxs.has(cell.idx))
+        );
+      }
+      if (!placements.length) return null; // no word of this length fits anywhere
+      placementsByLength.set(length, placements);
+    }
+
+    return coverBoardWithWords(cells, expectedLengths, placementsByLength);
+  }
+
   // ─── Backtracking path solver ─────────────────────────────────────────────
   //
   // Partitions all letter cells into connected orthogonal paths whose lengths
@@ -308,6 +429,7 @@
   const PALETTE = ['#E53935', '#43A047', '#1E88E5', '#FB8C00', '#8E24AA', '#00ACC1', '#F4511E', '#6D4C41'];
   const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
   const DEFAULT_BUDGET = 2000000;
+  const COVER_BUDGET = 500000;
 
   function solveByWordLengths(allCells, cellsByIdx, n, wordLengths, opts = {}) {
     if (!wordLengths.length) return null;
@@ -419,12 +541,15 @@
 
     const cells = [];
     const cellsByIdx = new Map();
+    // Why a failure happened is impossible to guess from the outside, so record
+    // the counts each strategy depends on as we go.
+    const diag = { cellsTotal: cellEls.length, gridN: n, holes: 0, blanks: 0, strategies: [] };
 
     for (const cellEl of cellEls) {
       const idx = Number(cellEl.dataset.cellIdx);
-      if (isHoleCell(cellEl)) continue;
+      if (isHoleCell(cellEl)) { diag.holes++; continue; }
       const letter = getLetter(cellEl);
-      if (!letter) continue;                     // skip non-letter cells only
+      if (!letter) { diag.blanks++; continue; }  // skip non-letter cells only
 
       const colorKey  = getCellColorKey(cellEl); // null is OK — handled below
       const position  = getWordPosition(cellEl);
@@ -434,7 +559,10 @@
       cellsByIdx.set(idx, cell);
     }
 
-    if (!cells.length) return { ok: false, error: 'No letter cells found on this Wend board.' };
+    diag.letters = cells.length;
+    if (!cells.length) {
+      return { ok: false, error: 'No letter cells found on this Wend board.', diag };
+    }
 
     const expectedLengths = getExpectedWordLengths();
     let words = null;
@@ -445,32 +573,44 @@
     // rather than trusting the strategy that made it is what stops a plausible-
     // looking-but-impossible grouping reaching the screen - a path that teleports
     // across the board is not a word, whichever code path proposed it.
-    const isUsable = (candidate) => {
-      if (!candidate || !candidate.length) return false;
+    const checkUsable = (candidate) => {
+      if (!candidate || !candidate.length) return 'produced nothing';
 
       const seen = new Set();
       for (const { cells: group } of candidate) {
-        if (group.length < 2) return false;
+        if (group.length < 2) return 'a word of fewer than 2 letters';
         for (let i = 0; i < group.length; i++) {
-          if (seen.has(group[i].idx)) return false; // two words claiming one cell
+          if (seen.has(group[i].idx)) return `cell ${group[i].idx} claimed by two words`;
           seen.add(group[i].idx);
           if (i === 0) continue;
           const a = group[i - 1].idx;
           const b = group[i].idx;
           const step = Math.abs(Math.floor(a / n) - Math.floor(b / n)) + Math.abs((a % n) - (b % n));
-          if (step !== 1) return false; // not a step to a neighbouring cell
+          if (step !== 1) return `path jumps from cell ${a} to ${b} (not adjacent)`;
         }
       }
-      if (seen.size !== cells.length) return false; // letters left over
+      if (seen.size !== cells.length) {
+        return `covered ${seen.size} of ${cells.length} letters`;
+      }
 
       if (expectedLengths.length) {
         const got = candidate.map((w) => w.cells.length).sort((x, y) => x - y);
         const want = [...expectedLengths].sort((x, y) => x - y);
-        if (JSON.stringify(got) !== JSON.stringify(want)) return false;
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          return `lengths [${got.join(',')}] do not match word list [${want.join(',')}]`;
+        }
       }
-      return true;
+      return null;
     };
 
+    let stage = 'init';
+    const isUsable = (candidate) => {
+      const reason = checkUsable(candidate);
+      diag.strategies.push(`${stage}: ${reason || 'OK'}`);
+      return !reason;
+    };
+
+    stage = 'strategy 0 (board position numbering)';
     // ── Strategy 0: the board's own position numbering ───────────────────
     // Exact when it applies, so it goes first.
     {
@@ -482,6 +622,7 @@
 
     if (!isUsable(words)) words = null;
 
+    stage = 'strategy 1 (colour grouping)';
     // ── Strategy 1: colour grouping ──────────────────────────────────────
     if (!words && cells.some((c) => c.colorKey !== null)) {
       const groups = new Map();
@@ -521,6 +662,7 @@
 
     if (!isUsable(words)) words = null;
 
+    stage = 'strategy 1b (css custom property)';
     // ── Strategy 1b: CSS custom property scan ────────────────────────────
     // The word colour may be encoded in a CSS custom property (--xxxx: #color)
     // set by the cell's class and inherited by child elements. We scan all
@@ -560,12 +702,25 @@
 
     if (!isUsable(words)) words = null;
 
+    stage = 'strategy 2 (backtracking solver)';
     // ── Strategy 2: backtracking solver ──────────────────────────────────
     // Length alone leaves a huge number of valid partitions and picks an
     // arbitrary one, which is how this ended up drawing paths that spelled
     // nothing. So try the constrained forms first and only fall back to the
     // bare length partition - still the best guess available - if the board
     // gives us nothing to constrain it with.
+    // Words-onto-board first; path-carving only if there's no dictionary to
+    // drive it, since that route can only ever guess at which pieces are words.
+    if (!words && expectedLengths.length && dictionary) {
+      const startIdxs = new Set(cells.filter((c) => c.isStart).map((c) => c.idx));
+      const placed = solveByWordPlacement(cells, cellsByIdx, n, expectedLengths, dictionary, startIdxs);
+      if (placed) {
+        words = placed.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
+      }
+    }
+
+    if (!isUsable(words)) words = null;
+
     if (!words && expectedLengths.length) {
       const startIdxs = new Set(cells.filter((c) => c.isStart).map((c) => c.idx));
       const attempts = [];
@@ -594,10 +749,11 @@
       return {
         ok: false,
         error: 'Could not work out which letters belong to which word on this board.',
+        diag,
       };
     }
 
-    return { ok: true, words };
+    return { ok: true, words, diag };
   }
 
   // ─── Overlay rendering ────────────────────────────────────────────────────
@@ -654,29 +810,92 @@
   async function debugDump() {
     const gridRoot = findGrid();
     if (!gridRoot) return 'No Wend grid on this page.';
+
     const dictionary = await loadDictionary();
-    const lengths = getExpectedWordLengths();
-    const scrape = scrapeBoard(gridRoot, dictionary);
+    const lengths    = getExpectedWordLengths();
+    const sum        = lengths.reduce((a, b) => a + b, 0);
+    const scrape     = scrapeBoard(gridRoot, dictionary);
+    const d          = scrape.diag || {};
+
+    const out = [
+      `grid: ${d.gridN}x${d.gridN}, ${d.cellsTotal} cells (${d.holes} holes, ${d.blanks} blank)`,
+      `letters on board: ${d.letters}`,
+      `word-list rows: ${findWordListRows().length}`,
+      `expected lengths: [${lengths.join(', ')}] = ${sum}`,
+      `dictionary: ${dictionary ? `${dictionary.size} words` : 'FAILED TO LOAD'}`,
+    ];
+
+    // The whole solve is built on these two numbers agreeing. If they do not,
+    // no partition can ever cover the board and every strategy fails, which is
+    // exactly the "could not work out which letters" case.
+    if (!lengths.length) {
+      out.push('>> word list read as EMPTY: strategies 0, 1b and 2 are all disabled.');
+      out.push('   The word-list selectors are the thing to check.');
+    } else if (d.letters != null && sum !== d.letters) {
+      out.push(`>> MISMATCH: word lengths total ${sum} but the board has ${d.letters} letters.`);
+      out.push('   Nothing can cover the board under that constraint, so every strategy fails.');
+    }
+
+    if (d.strategies && d.strategies.length) {
+      out.push('strategy results:');
+      for (const line of d.strategies) out.push(`  ${line}`);
+    }
+
     if (!scrape.ok) {
-      return [
-        `word-list rows found: ${findWordListRows().length}`,
-        `expected word lengths: [${lengths.join(', ')}]  ${lengths.length ? '' : '<- EMPTY: every length-based strategy is disabled'}`,
-        `scrape failed: ${scrape.error}`,
-      ].join('\n');
+      out.push(`scrape failed: ${scrape.error}`);
+      return out.join('\n');
     }
 
     const words = scrape.words.map(({ cells }) => cells.map((c) => c.letter).join(''));
-    return [
-      `word-list rows found: ${findWordListRows().length}`,
-      `expected word lengths: [${lengths.join(', ')}]`,
-      `dictionary: ${dictionary ? `${dictionary.size} words` : 'FAILED TO LOAD'}`,
-      `words found: ${words.join(', ')}`,
-      `all in dictionary: ${dictionary ? words.every((w) => dictionary.has(w.toLowerCase())) : 'n/a'}`,
-    ].join('\n');
+    out.push(`words found: ${words.join(', ')}`);
+    out.push(`all in dictionary: ${dictionary ? words.every((w) => dictionary.has(w.toLowerCase())) : 'n/a'}`);
+    return out.join('\n');
+  }
+
+  // Dumps the board exactly as the scraper reads it, plus how many real words
+  // can physically be laid on it at each required length. If the letters below
+  // don't match what's on screen the scraper is at fault; if they match but a
+  // length shows 0 placements, the answer is a word the dictionary doesn't have.
+  async function debugBoard() {
+    const gridRoot = findGrid();
+    if (!gridRoot) return 'No Wend grid on this page.';
+    const dictionary = await loadDictionary();
+    const lengths = getExpectedWordLengths();
+
+    const cellEls = Array.from(gridRoot.children).filter((el) => /^cell-\d+$/.test(el.dataset.testid || ''));
+    const n = Math.round(Math.sqrt(cellEls.length));
+    const cells = [];
+    const cellsByIdx = new Map();
+    const glyphs = new Array(n * n).fill(' ');
+    for (const el of cellEls) {
+      const idx = Number(el.dataset.cellIdx);
+      if (isHoleCell(el)) { glyphs[idx] = '#'; continue; }
+      const letter = getLetter(el);
+      if (!letter) { glyphs[idx] = '.'; continue; }
+      glyphs[idx] = letter;
+      const cell = { idx, el, letter, colorKey: null, position: 0, isStart: isStartCell(el, idx) };
+      cells.push(cell);
+      cellsByIdx.set(idx, cell);
+    }
+
+    const lines = ['board as scraped (# hole, . blank):'];
+    for (let r = 0; r < n; r++) lines.push('  ' + glyphs.slice(r * n, r * n + n).join(' '));
+    lines.push(`letters: ${cells.length}   word lengths: [${lengths.join(', ')}] = ${lengths.reduce((a, b) => a + b, 0)}`);
+    lines.push(`start indicators: ${cells.filter((c) => c.isStart).length}`);
+
+    if (!dictionary) { lines.push('dictionary: FAILED TO LOAD'); return lines.join('\n'); }
+    for (const length of new Set(lengths)) {
+      const placements = placementsForLength(cells, cellsByIdx, n, length, dictionary);
+      const words = [...new Set(placements.map((p) => p.map((c) => c.letter).join('')))];
+      lines.push(`  length ${length}: ${placements.length} placement(s)` +
+                 (words.length ? ` — ${words.slice(0, 8).join(', ')}` : ' — NONE: no dictionary word of this length fits the board'));
+    }
+    return lines.join('\n');
   }
 
   window.LockedInDebug = window.LockedInDebug || {};
   window.LockedInDebug.wend = () => debugDump().then((text) => console.log(text));
+  window.LockedInDebug.wendBoard = () => debugBoard().then((text) => console.log(text));
 
   window.LockedInGames = window.LockedInGames || [];
   window.LockedInGames.push({
