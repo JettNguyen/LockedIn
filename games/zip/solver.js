@@ -11,10 +11,15 @@
  * @param {Map<string,number>}   board.waypoints - "row,col" → waypoint number.
  * @param {Array<Array<{top:boolean,bottom:boolean,left:boolean,right:boolean}>>}
  *                               board.walls     - walls[r][c] for each cell.
- * @returns {{r:number,c:number}[]|null}
+ * @param {number} [cap] - stop once this many distinct solutions are found.
+ * @param {number} [budget] - max search nodes before giving up.
+ * @returns {{solutions: {r:number,c:number}[][], exhaustedBudget: boolean}}
  */
-function solveZip({ size: n, waypoints, walls }) {
+function solveZipSolutions({ size: n, waypoints, walls }, cap = 1, budget = 4000000) {
   const total = n * n;
+  const solutions = [];
+  let nodes = 0;
+  let exhaustedBudget = false;
 
   // Locate waypoint 1 (start).
   let startR = -1, startC = -1;
@@ -24,7 +29,7 @@ function solveZip({ size: n, waypoints, walls }) {
       break;
     }
   }
-  if (startR === -1) return null;
+  if (startR === -1) return { solutions: [], exhaustedBudget: false };
 
   const visited = Array.from({ length: n }, () => new Array(n).fill(false));
   const path = [];
@@ -68,11 +73,21 @@ function solveZip({ size: n, waypoints, walls }) {
     return count;
   }
 
+  // Returns true to mean "stop searching" - the caller's cap has been reached.
+  // A plain solve passes cap=1 and so short-circuits on the first solution
+  // exactly as before.
   function dfs(r, c, nextRequired) {
     visited[r][c] = true;
     path.push({ r, c });
 
-    if (path.length === total) return true;
+    if (++nodes > budget) { exhaustedBudget = true; visited[r][c] = false; path.pop(); return true; }
+
+    if (path.length === total) {
+      solutions.push(path.map((cell) => ({ r: cell.r, c: cell.c })));
+      visited[r][c] = false;
+      path.pop();
+      return solutions.length >= cap;
+    }
 
     // Connectivity pruning.
     const remaining = total - path.length;
@@ -105,5 +120,17 @@ function solveZip({ size: n, waypoints, walls }) {
     return false;
   }
 
-  return dfs(startR, startC, 2) ? path : null;
+  dfs(startR, startC, 2);
+  return { solutions, exhaustedBudget };
+}
+
+/**
+ * Convenience wrapper: the single solution, or null.
+ * @param {number} [cap] - stop once this many distinct solutions are found.
+ * @param {number} [budget] - max search nodes before giving up.
+ * @returns {{solutions: {r:number,c:number}[][], exhaustedBudget: boolean}}
+ */
+function solveZip(board) {
+  const [solution] = solveZipSolutions(board, 1).solutions;
+  return solution || null;
 }

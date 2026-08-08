@@ -20,6 +20,15 @@
 // anywhere inside the grid and block each cell boundary it actually covers,
 // however many cells it spans. The class names remain as a fallback for markup
 // that stops looking like a bar at all (see run()).
+//
+// TIMING MATTERS: Zip only draws its walls while the puzzle is unsolved. Scrape
+// a finished board and you get a board with no walls - which still solves, just
+// to a different route, since without walls the waypoints alone don't pin down
+// a unique path. run() therefore checks for a SECOND solution and refuses to
+// draw when it finds one, rather than presenting an arbitrary path as the
+// answer. It also means a wall count read off a completed board proves nothing
+// about whether wall detection works; the debug dump labels the board state for
+// exactly that reason.
 
 (function () {
   const SIDES = ['top', 'right', 'bottom', 'left'];
@@ -267,13 +276,42 @@
       (a, b) => countWalls(b) - countWalls(a)
     );
 
+    // Ask for two solutions, not one. A real Zip board has exactly one, so more
+    // than one means the board we scraped is missing walls that the real board
+    // has - and a solver handed too few walls doesn't fail, it cheerfully
+    // returns some other Hamiltonian path. That is precisely the "it goes
+    // through walls" bug, and it is worth catching for a reason the board makes
+    // unavoidable: the walls are only drawn while the puzzle is unsolved, so
+    // any scrape taken after it's finished sees a board with no walls at all.
+    // from games/zip/solver.js
     let path = null;
+    let underConstrained = false;
     for (const walls of readings) {
-      path = solveZip({ size: scrape.size, waypoints: scrape.waypoints, walls }); // from games/zip/solver.js
-      if (path) break;
+      const { solutions, exhaustedBudget } = solveZipSolutions(
+        { size: scrape.size, waypoints: scrape.waypoints, walls },
+        2
+      );
+      if (!solutions.length) continue;
+      // Running out of budget means we never finished proving uniqueness, not
+      // that we found a second answer - so take the solution rather than
+      // refusing over a search that was merely slow.
+      if (solutions.length > 1 && !exhaustedBudget) {
+        underConstrained = true;
+        continue;
+      }
+      path = solutions[0];
+      underConstrained = false;
+      break;
     }
+
     if (!path) {
-      return { ok: false, error: 'No solution exists for the scraped board (solver returned null).' };
+      return {
+        ok: false,
+        error: underConstrained
+          ? 'The board as scraped has more than one solution, so some walls are missing — ' +
+            "Zip only draws its walls while the puzzle is unsolved, so this is expected on a finished board."
+          : 'No solution exists for the scraped board (solver returned null).',
+      };
     }
 
     const cells = path.map((cell) => scrape.cellElements[cell.r][cell.c]);
@@ -326,8 +364,20 @@
       return lines.join('\n');
     };
 
+    // How much of the board is already drawn on. This matters more than it
+    // looks: Zip removes its walls once the puzzle is finished, so a wall count
+    // taken from a completed board describes nothing and must not be read as
+    // confirmation that wall detection works.
+    const drawn = [].concat(...scrape.cellElements).filter(isCellDrawn).length;
+    const total = scrape.size * scrape.size;
+    const stateNote =
+      drawn === 0 ? 'untouched — this is the reading that matters'
+      : drawn >= total ? 'COMPLETED — the walls are gone from the board, so the counts below mean nothing'
+      : `partly drawn (${drawn}/${total} cells)`;
+
     return [
       `Zip ${scrape.size}x${scrape.size} — ${scrape.waypoints.size} waypoints`,
+      `board state: ${stateNote}`,
       `\nGeometry (${countWalls(scrape.wallsGeometric)} walls, used first):`,
       render(scrape.wallsGeometric),
       `\nHashed classes (${countWalls(scrape.wallsByClass)} walls, fallback):`,
