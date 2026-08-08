@@ -9,14 +9,21 @@
 //
 // SOLVING: purely deterministic - no AI, no clue interpretation.
 //
-// The clues can't be solved from the page: reading "Chowder ingredient" and
-// producing CLAM needs world knowledge that isn't anywhere in the DOM. What IS
-// on the page is the ladder rule, and it constrains things hard: the five rungs
-// have to reorder into a chain where each neighbour differs by exactly one
-// letter, every rung is a real word, and the locked top/bottom rungs extend the
-// chain at each end.
+// PRIMARY: read the answer off the page. LinkedIn hydrates its SPA from JSON
+// parked in <code> elements, and the CrossClimb payload carries the whole
+// puzzle - every rung's `word`, its `clue`, and a `solutionRungIndex` giving
+// its place in the ladder. Matching each payload rung to a row by clue text
+// solves a completely blank board outright.
 //
-// So this works from whatever you've typed in and reports only what those
+// That is only trusted once the words independently chain into a single valid
+// ladder, because the key names are LinkedIn's and will eventually move. When
+// they do, this falls back to the deduction below rather than misreporting.
+//
+// FALLBACK: the ladder rule alone. Reading "Chowder ingredient" and producing
+// CLAM needs world knowledge the DOM hasn't got, but the rungs must still
+// reorder into a chain where each neighbour differs by one letter, every rung
+// is a real word, and the locked top/bottom rungs extend it at each end. So
+// this works from whatever you've typed in and reports only what those
 // constraints *force*:
 //   • the order of the rungs you've filled (always determined once all five are in)
 //   • any rung you haven't filled whose word the chain pins down - one blank
@@ -306,12 +313,48 @@
       return { ok: false, error: 'The CrossClimb board looks half-loaded — found fewer than two fillable rungs.' };
     }
 
-    const known = middleRows.map((r) => r.word);
-    const filledCount = known.filter(Boolean).length;
-    const wordLength = middleRows.map((r) => r.slots).find((n) => n > 0) || (known.find(Boolean) || '').length;
+    const typed = middleRows.map((r) => r.word);
+    const wordLength = middleRows.map((r) => r.slots).find((n) => n > 0) || (typed.find(Boolean) || '').length;
     if (!wordLength) {
       return { ok: false, error: 'Could not tell how long the CrossClimb answers are.' };
     }
+
+    // The page ships the answer. Prefer reading it over deducing it - deduction
+    // can't get anywhere from a blank board, because the clues carry the
+    // information and solving those needs world knowledge the DOM hasn't got.
+    // Only trust it once the words independently form a single valid ladder,
+    // so a payload shape that shifts under us falls back rather than misleads.
+    const embedded = scrapeEmbeddedRungs(wordLength);
+    let known = typed;
+    let payloadTop = null;
+    let payloadBottom = null;
+    let fromPayload = false;
+    {
+      const chain = embedded.length >= middleRows.length ? chainWords(embedded.map((e) => e.word)) : null;
+      const matched = chain ? wordsForMiddleRows(middleRows, embedded) : null;
+      if (matched) {
+        known = matched;
+        fromPayload = true;
+
+        // The chain runs through all seven rungs, so its two ends are the
+        // locked top and bottom. Naming them settles the one thing the ladder
+        // rule alone can never settle: which way up it goes. solutionRungIndex
+        // says which end is the top; without it the chain is still symmetric
+        // and the existing orientation heuristic takes over.
+        const indexOf = new Map(embedded.map((e) => [e.word, e.index]));
+        const first = indexOf.get(chain[0]);
+        const last = indexOf.get(chain[chain.length - 1]);
+        const oriented =
+          Number.isInteger(first) && Number.isInteger(last) && first !== last
+            ? (first < last ? chain : [...chain].reverse())
+            : null;
+        if (oriented && oriented.length === middleRows.length + 2) {
+          payloadTop = oriented[0];
+          payloadBottom = oriented[oriented.length - 1];
+        }
+      }
+    }
+    const filledCount = known.filter(Boolean).length;
 
     // Search common words first: the intended answers live there, and the
     // smaller graph is what makes a blank rung resolvable at all. Only widen to
@@ -324,7 +367,12 @@
       // Anything already typed has to be in the graph even if it's an unusual word.
       for (const w of known) if (w) vocabulary.push(w.toLowerCase());
       graph = buildLadderGraph([...new Set(vocabulary)]);
-      const attempt = findLadders(known, graph, topRow && topRow.word, bottomRow && bottomRow.word);
+      const attempt = findLadders(
+        known,
+        graph,
+        (topRow && topRow.word) || payloadTop,
+        (bottomRow && bottomRow.word) || payloadBottom
+      );
       if (attempt.solutions.length) { result = attempt; break; }
     }
 
@@ -366,7 +414,7 @@
       const anchorEl = row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl);
       markers.push({
         cellEl: anchorEl,
-        html: badgeHtml(pos, known[i] ? '' : word[i]),
+        html: badgeHtml(pos, typed[i] ? '' : (known[i] || word[i])),
         color: POSITION_COLORS[(pos - 1) % POSITION_COLORS.length],
         isFilled: () => currentPositionOf(row.rowEl) === pos,
       });
@@ -491,6 +539,162 @@
     return ['embedded puzzle data — payloads mentioning this game:', ...reports].join('\n');
   }
 
+  // ── Reading the answer out of the page ────────────────────────────────────
+  //
+  // LinkedIn hydrates the SPA from JSON parked in <code> elements, and the
+  // CrossClimb payload carries the whole puzzle: every rung's `word`, its
+  // `clue`, and a `solutionRungIndex` saying where that rung belongs. So the
+  // clues don't have to be *solved* at all - the answer is already on the page,
+  // the same way Wend's is.
+  //
+  // Everything below is written to be suspicious of what it finds: the key
+  // names are LinkedIn's and can change, so the words are only used once they
+  // independently form a valid ladder (see run()). If the shape shifts, this
+  // returns nothing and the constraint solver takes over as before.
+
+  function payloadNodes() {
+    return document.querySelectorAll(
+      'code, script[type="application/json"], script[type="application/ld+json"]'
+    );
+  }
+
+  // Pull the first plausible clue string out of a rung object.
+  function clueTextOf(obj) {
+    let found = null;
+    (function walk(value, keyName, depth) {
+      if (found || depth > 4) return;
+      if (typeof value === 'string') {
+        if (/clue|text|hint/i.test(keyName || '') && value.trim().length > 3) found = value.trim();
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item, keyName, depth + 1);
+        return;
+      }
+      if (value && typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) walk(v, k, depth + 1);
+      }
+    })(obj, '', 0);
+    return found;
+  }
+
+  /**
+   * Every rung the page's own payload describes: its word, where the payload
+   * says it belongs, and its clue text (used to match a payload rung to the row
+   * on screen). Returns [] if nothing recognisable is there.
+   */
+  function scrapeEmbeddedRungs(wordLength) {
+    if (!wordLength) return [];
+    const shaped = new RegExp(`^[A-Za-z]{${wordLength}}$`);
+    const byWord = new Map();
+
+    for (const node of payloadNodes()) {
+      const text = node.textContent || '';
+      if (text.length < 40 || !/crossclimb/i.test(text)) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (_) {
+        continue;
+      }
+
+      (function walk(value, depth) {
+        if (depth > 10) return;
+        if (Array.isArray(value)) {
+          for (const item of value) walk(item, depth + 1);
+          return;
+        }
+        if (!value || typeof value !== 'object') return;
+
+        if (typeof value.word === 'string' && shaped.test(value.word)) {
+          const word = value.word.toUpperCase();
+          const index = Number.isInteger(value.solutionRungIndex) ? value.solutionRungIndex : null;
+          const existing = byWord.get(word);
+          if (!existing) {
+            byWord.set(word, { word, index, clue: clueTextOf(value) });
+          } else {
+            if (existing.index === null && index !== null) existing.index = index;
+            if (!existing.clue) existing.clue = clueTextOf(value);
+          }
+        }
+        for (const v of Object.values(value)) walk(v, depth + 1);
+      })(parsed, 0);
+    }
+
+    return [...byWord.values()];
+  }
+
+  // Order an unordered set of words into the single chain where each neighbour
+  // differs by one letter. Returns null unless exactly one such chain exists
+  // (mirror images aside) - a set that doesn't chain isn't a CrossClimb answer,
+  // whatever the payload called it.
+  function chainWords(words) {
+    const n = words.length;
+    if (n < 3) return null;
+    const chains = [];
+    const used = new Array(n).fill(false);
+    const order = [];
+
+    function extend() {
+      if (chains.length > 2) return;
+      if (order.length === n) { chains.push(order.map((i) => words[i])); return; }
+      for (let i = 0; i < n; i++) {
+        if (used[i]) continue;
+        if (order.length && hammingDiff(words[order[order.length - 1]], words[i]) !== 1) continue;
+        used[i] = true;
+        order.push(i);
+        extend();
+        order.pop();
+        used[i] = false;
+      }
+    }
+    extend();
+
+    // A chain and its reverse both turn up; anything more means it isn't unique.
+    if (chains.length !== 2) return chains.length === 1 ? chains[0] : null;
+    const [a, b] = chains;
+    return a.join() === [...b].reverse().join() ? a : null;
+  }
+
+  function normalizeClue(text) {
+    return (text || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '').trim();
+  }
+
+  function domClueFor(rungId) {
+    const direct = document.getElementById(`crossclimb-clue-section-${rungId}`);
+    if (direct) return direct.textContent;
+    for (const el of document.querySelectorAll('[id*="clue"]')) {
+      if (new RegExp(`(^|[^0-9])${rungId}([^0-9]|$)`).test(el.id || '')) return el.textContent;
+    }
+    return null;
+  }
+
+  /**
+   * Match each middle rung on screen to its word from the payload, via clue
+   * text. Returns an array parallel to middleRows, or null if the match isn't
+   * clean - a partial match would silently mislabel rows, which is worse than
+   * falling back to the constraint solver.
+   */
+  function wordsForMiddleRows(middleRows, entries) {
+    const byClue = new Map();
+    for (const entry of entries) {
+      const key = normalizeClue(entry.clue);
+      if (key) byClue.set(key, entry);
+    }
+    if (byClue.size < middleRows.length) return null;
+
+    const words = [];
+    const claimed = new Set();
+    for (const row of middleRows) {
+      const key = normalizeClue(domClueFor(row.id));
+      const entry = key ? byClue.get(key) : null;
+      if (!entry || claimed.has(entry.word)) return null;
+      claimed.add(entry.word);
+      words.push(entry.word);
+    }
+    return words;
+  }
+
   async function debugDump() {
     const grid = findGrid();
     if (!grid) return describePage();
@@ -505,8 +709,13 @@
     const wordLength = middleRows.map((r) => r.slots).find((n) => n > 0);
     if (!wordLength) return 'Could not tell how long the answers are.';
 
+    const embedded = scrapeEmbeddedRungs(wordLength);
+    const chain = chainWords(embedded.map((e) => e.word));
     const lines = [
       `typed so far: ${known.map((w) => w || '????').join(' ')}`,
+      `answers read from the page: ${embedded.length ? embedded.map((e) => e.word).join(', ') : '(none found)'}`,
+      `they chain into a ladder: ${chain ? chain.join(' -> ') : 'no'}`,
+      `clue text matched per rung: ${chain && wordsForMiddleRows(middleRows, embedded) ? 'yes' : 'no'}`,
       findEmbeddedPuzzleData(wordLength),
     ];
     for (const commonOnly of [true, false]) {
