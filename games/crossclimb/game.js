@@ -379,9 +379,58 @@
   // Prints what the board constrains and what it doesn't - including the top and
   // bottom rung candidates, which have no sensible place in the overlay itself.
   // Run `LockedInDebug.crossclimb()` in the console on the CrossClimb page.
+  // When none of findGrid()'s selectors match, "no grid" is a dead end - it says
+  // the markup changed without saying what to. So describe what the page does
+  // have: the data-* attributes it uses, any class names that sound like this
+  // game, and its text inputs. That's the fingerprint needed to re-anchor the
+  // scraper, and it's far smaller than dumping the whole DOM.
+  function describePage() {
+    const dataAttrs = new Map();
+    const classHits = new Set();
+    const INTERESTING = /climb|guess|rung|ladder|drag|sortable/i;
+    let elements = 0;
+
+    for (const el of document.querySelectorAll('*')) {
+      elements++;
+      for (const attr of el.attributes) {
+        if (attr.name.startsWith('data-')) {
+          dataAttrs.set(attr.name, (dataAttrs.get(attr.name) || 0) + 1);
+        }
+      }
+      const cls = el.getAttribute('class') || '';
+      if (INTERESTING.test(cls)) {
+        for (const token of cls.split(/\s+/)) if (INTERESTING.test(token)) classHits.add(token);
+      }
+      if (el.id && INTERESTING.test(el.id)) classHits.add(`#${el.id}`);
+    }
+
+    const inputs = Array.from(document.querySelectorAll('input'));
+    const inputAttrs = new Set();
+    for (const input of inputs.slice(0, 40)) {
+      for (const attr of input.attributes) {
+        if (attr.name !== 'value') inputAttrs.add(attr.name);
+      }
+    }
+
+    const topData = [...dataAttrs.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 25)
+      .map(([name, count]) => `${name} (${count})`);
+
+    return [
+      'No CrossClimb grid on this page — none of the selectors matched.',
+      `elements on page: ${elements}`,
+      `text inputs: ${inputs.length}   their attributes: ${[...inputAttrs].join(', ') || '(none)'}`,
+      `class/id names mentioning climb|guess|rung|ladder|drag|sortable:`,
+      `  ${[...classHits].slice(0, 30).join(', ') || '(NONE — this game may be rendered in an iframe)'}`,
+      'most common data-* attributes:',
+      `  ${topData.join(', ') || '(none)'}`,
+    ].join('\n');
+  }
+
   async function debugDump() {
     const grid = findGrid();
-    if (!grid) return 'No CrossClimb grid on this page.';
+    if (!grid) return describePage();
     const scrape = scrapeBoard(grid);
     if (!scrape.ok) return scrape.error;
 
