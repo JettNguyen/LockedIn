@@ -19,7 +19,7 @@ out of the overlay so you always know what's left.
 | **Zip** | Green line tracing the path, with a pulsing gold ring around the starting cell and an arrowhead at the finish |
 | **Patches** | Colored region outlines, with the cells you haven't placed yet hatched |
 | **Wend** | Thin colored path per word, ringed start cell and an arrowhead showing direction — drawn around the letters so the board stays readable |
-| **CrossClimb** | Numbered position badges with each rung's word and drag order, read from the puzzle data the page ships |
+| **CrossClimb** | Drag order as a numbered badge per rung, plus each rung's answer spelled across its letter slots, read from the puzzle data the page ships |
 
 ## Usage
 
@@ -128,7 +128,7 @@ games/
   wend/
     game.js             Reads word order from LinkedIn's embedded position data and renders paths
   crossclimb/
-    game.js             Deterministic word-ladder constraint solver (no AI)
+    game.js             Reads the ladder out of the page's own puzzle data, falling back to a word-ladder constraint solver (no AI)
 ```
 
 ## Adding a new game
@@ -217,24 +217,30 @@ console.log(solveZip({
 
 ## What isn't solvable from the page
 
-Two of LinkedIn's games can't be solved deterministically, and it's worth being
-precise about why rather than shipping a guess.
+**CrossClimb** looked like it wouldn't be. Solving it *as a puzzle* turns on
+reading a clue — "Chowder ingredient" → `CLAM` — and that knowledge is nowhere
+in the DOM. But it turned out not to matter: LinkedIn hydrates its SPA from JSON
+parked in `<code>` elements, and the CrossClimb payload carries every rung's
+word plus a `solutionRungIndex` giving its place in the ladder. So a completely
+blank board solves outright, with nothing typed in and no clue interpreted.
 
-**CrossClimb** turns on reading a clue — "Chowder ingredient" → `CLAM` — and
-that knowledge is nowhere in the DOM. What *is* on the page is the ladder rule,
-and it constrains hard: the rungs must reorder into a chain where neighbours
-differ by exactly one letter and every rung is a real word. So the solver works
-from whatever you've typed in and reports only what those constraints force —
-the drag order, any blank rung the chain pins down, and the candidates for the
-locked end rungs. Measured over random ladders drawn from common words, one
-blank rung is uniquely determined about two thirds of the time and two blanks
-about a quarter. A blank board is not solvable, and it says so instead of
-inventing an answer.
+Because those key names are LinkedIn's and will eventually move, the payload is
+only believed once the words it yields independently chain into a single valid
+ladder. When they don't, it falls through to deduction from the ladder rule
+alone: the rungs must reorder into a chain where neighbours differ by exactly
+one letter and every rung is a real word. That works from whatever you've typed
+and reports only what the constraints force — the drag order, any blank rung the
+chain pins down, and the candidates for the locked end rungs. Measured over
+random ladders drawn from common words, one blank rung is uniquely determined
+about two thirds of the time and two blanks about a quarter; a blank board isn't
+solvable that way at all, and it says so rather than inventing an answer.
 
-One caveat it reports rather than hides: a ladder read top-to-bottom and the
-same ladder read bottom-to-top are both valid chains, so until one of the locked
-end rungs is known the orientation is a genuine coin flip. The overlay shows
-whichever direction is closer to how the rungs are already arranged.
+The fallback carries one caveat it reports rather than hides: a ladder read
+top-to-bottom and the same ladder read bottom-to-top are both valid chains, so
+until one of the locked end rungs is known the orientation is a genuine coin
+flip, and the overlay shows whichever direction is closer to how the rungs are
+already arranged. The payload path has no such ambiguity — `solutionRungIndex`
+states the direction outright.
 
 **Pinpoint** isn't supported. The game gives five items and asks for the
 category, which is a pure semantic-knowledge task. Matching against WordNet

@@ -43,8 +43,10 @@
 // kind of confidently-wrong answer that's worse than no answer.
 //
 // OVERLAY: each middle rung's drag handle gets a numbered badge showing its
-// target position (1=top) and its word. Badges fade once you drag that row into
-// the right slot.
+// target position (1=top), and the rung's answer is spelled out one letter per
+// letter slot - the same boxes you type into, so it reads at the size of the
+// board rather than the size of the drag handle. Letters clear as you type
+// them; a badge clears once its rung is both filled in and in the right slot.
 
 (function () {
   // A ladder longer than this would make the permutation sweep silly; LinkedIn
@@ -287,34 +289,103 @@
 
   // ── Marker appearance ──────────────────────────────────────────────────────
 
-  const POSITION_COLORS = ['#f5c542', '#4caf50', '#2196f3', '#e91e63', '#9c27b0'];
+  // Five hues that stay legible as both a white-on-solid badge digit and as the
+  // letter glyphs, which are drawn in the hue itself over a light board. The
+  // extension's usual gold sat here first and failed at both: white on gold is
+  // barely a contrast at all, and gold letters on LinkedIn's off-white board
+  // were the faintest thing on screen. Same reason the green is a shade down
+  // from the Material 500 it started as.
+  const POSITION_COLORS = ['#e8590c', '#2e7d32', '#1565c0', '#c2185b', '#6a1b9a'];
 
   function badgeHtml(pos, word) {
     const bg = POSITION_COLORS[(pos - 1) % POSITION_COLORS.length];
+    const box =
+      `display:flex;flex-direction:column;align-items:center;justify-content:center;` +
+      `width:100%;height:100%;background:${bg};border-radius:4px;color:#fff;font-weight:800;line-height:1.15;`;
+    // With the answer spelled out across the rung's own letter slots there's
+    // nothing left to cram in beside the number, so it gets the whole badge.
+    if (!word) return `<span style="${box}font-size:1.15em;">${pos}</span>`;
     return (
-      `<span style="display:flex;flex-direction:column;align-items:center;justify-content:center;` +
-      `width:100%;height:100%;background:${bg};border-radius:4px;color:#fff;font-weight:700;line-height:1.2;">` +
+      `<span style="${box}">` +
       `<span style="font-size:0.8em;">${pos}</span>` +
-      `<span style="font-size:0.55em;opacity:0.9;letter-spacing:0.04em;">${word || ''}</span>` +
+      `<span style="font-size:0.55em;opacity:0.9;letter-spacing:0.04em;">${word}</span>` +
       `</span>`
     );
   }
 
   // ── Overlay ────────────────────────────────────────────────────────────────
 
+  // Where to draw each letter of a rung's answer: one element per letter slot.
+  // The word used to be printed inside the position badge, but that badge sits
+  // on the drag handle - a box roughly 30px across - so a four-letter word came
+  // out around 7px tall and was, fairly, unreadable. A rung's own letter slots
+  // are sized for exactly one letter each, which is the whole problem solved.
+  //
+  // Returns null if the slots can't be lined up with the letters, and the
+  // caller falls back to the cramped-but-present badge text rather than
+  // silently dropping the word.
+  function letterCellsOf(row, word) {
+    const inputs = Array.from(guessInputs(row.rowEl));
+    if (!word || inputs.length !== word.length) return null;
+    // `.crossclimb__guess_box` is LinkedIn's own class name and those have gone
+    // missing before; the input carries a data attribute, so it is the durable
+    // anchor when the prettier one isn't there.
+    const cells = row.boxes.length === inputs.length ? row.boxes : inputs;
+    const sized = cells.every((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+    return sized ? cells : null;
+  }
+
+  function letterTyped(row, idx) {
+    const input = guessInputs(row.rowEl)[idx];
+    return !!(input && (input.value || '').trim());
+  }
+
+  // A rung is done when its answer is in *and* it sits in the right slot.
+  //
+  // Position alone is not enough, and getting that wrong hid the one thing the
+  // badge exists to say. On a board you haven't touched, a rung being in its
+  // target slot already is just luck - it happens to about one rung in five -
+  // and treating it as finished faded the badge out, taking the answer with it.
+  // What you saw was a board with a hole in it: positions 1, 3, 4, 5 marked and
+  // nothing at all on the row that needed no dragging.
+  function rowSettled(row, expected) {
+    const current = readWord(row.rowEl);
+    if (!current) return false;
+    return !expected || current === expected.toUpperCase();
+  }
+
   function showBadges(grid, middleRows, position, word, typed) {
     const markers = [];
     for (let i = 0; i < middleRows.length; i++) {
-      if (!position[i]) continue; // genuinely ambiguous - say nothing rather than guess
-      const row = middleRows[i];
       const pos = position[i];
-      const anchorEl = row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl);
+      if (!pos) continue; // genuinely ambiguous - say nothing rather than guess
+      const row = middleRows[i];
+      const color = POSITION_COLORS[(pos - 1) % POSITION_COLORS.length];
+      // Nothing to spell out on a rung you've already filled in yourself.
+      const answer = typed[i] ? null : word[i];
+      const letterCells = letterCellsOf(row, answer);
+
       markers.push({
-        cellEl: anchorEl,
-        html: badgeHtml(pos, typed[i] ? '' : (word[i] || '')),
-        color: POSITION_COLORS[(pos - 1) % POSITION_COLORS.length],
-        isFilled: () => currentPositionOf(row.rowEl) === pos,
+        cellEl: row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl),
+        html: badgeHtml(pos, letterCells ? '' : (answer || '')),
+        color,
+        isFilled: () => currentPositionOf(row.rowEl) === pos && rowSettled(row, word[i]),
       });
+
+      if (!letterCells) continue;
+      for (let j = 0; j < letterCells.length; j++) {
+        markers.push({
+          cellEl: letterCells[j],
+          glyph: answer[j],
+          color,
+          // Clears letter by letter as you type, so what's still showing is
+          // exactly what's still to type.
+          isFilled: () => letterTyped(row, j),
+        });
+      }
     }
     window.LockedInOverlay.show({ anchorEl: grid, markers });
   }
