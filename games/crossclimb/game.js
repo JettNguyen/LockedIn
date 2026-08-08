@@ -429,7 +429,7 @@
     let fromPayload = false;
     {
       const chain = embedded.length >= middleRows.length ? chainWords(embedded.map((e) => e.word)) : null;
-      const matched = chain ? rungsToRows(rows, middleRows, embedded) : null;
+      const matched = chain ? rungsToRows(rows, middleRows, embedded, chain) : null;
       if (matched) {
         known = matched;
         fromPayload = true;
@@ -795,21 +795,60 @@
   }
 
   /**
-   * Match payload rungs to the rows on screen.
+   * Match by what's already on the board. A word you've typed names its own
+   * rung outright - no ordering assumption, no clue needed - and the payload's
+   * words are distinct, so this is exact wherever it applies. The chain's two
+   * ends are the locked rungs, so the middle words are known too: if exactly
+   * one rung is still blank, the leftover word is forced.
+   *
+   * @returns {string[]|null} one word per middle row, or null if two or more
+   *   rungs are blank (nothing on the board distinguishes them).
+   */
+  function rowsByTypedWord(middleRows, chain) {
+    if (!chain || chain.length !== middleRows.length + 2) return null;
+    const remaining = new Set(chain.slice(1, -1));
+
+    const words = [];
+    for (const row of middleRows) {
+      if (!row.word) { words.push(null); continue; }
+      // Typed a word the ladder doesn't contain: it's wrong, or the payload
+      // isn't this puzzle. Either way this can't map anything.
+      if (!remaining.delete(row.word)) return null;
+      words.push(row.word);
+    }
+
+    const blanks = words.filter((w) => w === null).length;
+    if (blanks === 0) return words;
+    if (blanks > 1) return null;
+    const [spare] = [...remaining];
+    return words.map((w) => w || spare);
+  }
+
+  /**
+   * Match payload rungs to the rows on screen, strongest evidence first.
    *
    * Clue text is the honest link, but CrossClimb shows its clues one at a time
    * in a carousel, so usually only the focused rung's clue is in the DOM at all
    * and matching all five is impossible without clicking through the board.
    *
-   * The fallback is order: LinkedIn lists the rungs in the order it renders
-   * them, which is why each carries a separate solutionRungIndex saying where
-   * it actually belongs. Whatever clue IS on screen then serves as a check on
-   * that assumption - if it names a different rung than the ordering implies,
-   * the ordering is wrong and we take nothing rather than mislabel every row.
+   * The last resort is order: LinkedIn lists the rungs in the order it first
+   * renders them, which is why each carries a separate solutionRungIndex saying
+   * where it actually belongs. That order describes the board you were *dealt*,
+   * though - drag a rung and it stops describing the board you have. So it is
+   * only accepted when nothing already on screen contradicts it: every clue the
+   * page is showing, and every word you have typed in, has to agree.
+   *
+   * Skipping that second check is what mislabelled a finished DUNES->OASIS
+   * board, handing three correctly-placed rungs the positions of each other and
+   * leaving badges lit on a puzzle that was already solved. The board was
+   * spelling out the right answer the whole time; nothing had asked it.
    *
    * @returns {string[]|null} one word per middle row, or null.
    */
-  function rungsToRows(allRows, middleRows, entries) {
+  function rungsToRows(allRows, middleRows, entries, chain) {
+    const byWord = rowsByTypedWord(middleRows, chain);
+    if (byWord) return byWord;
+
     const byClue = wordsForMiddleRows(middleRows, entries);
     if (byClue) return byClue;
 
@@ -822,9 +861,10 @@
     }
     if (!slice || slice.length !== middleRows.length) return null;
 
-    // Cross-check against any clue the page is currently showing.
     for (let i = 0; i < middleRows.length; i++) {
-      const shown = normalizeClue(domClueFor(middleRows[i].id));
+      const row = middleRows[i];
+      if (row.word && row.word !== slice[i].word) return null;
+      const shown = normalizeClue(domClueFor(row.id));
       if (!shown) continue;
       const expected = normalizeClue(slice[i].clue);
       if (expected && shown !== expected) return null;
@@ -849,11 +889,19 @@
 
     const embedded = scrapeEmbeddedRungs(wordLength);
     const chain = chainWords(embedded.map((e) => e.word));
+    // Which strategy claimed the mapping matters as much as the mapping does -
+    // the first two are exact, the third is an assumption about the board's
+    // original layout that a dragged rung invalidates.
+    const matched = chain ? rungsToRows(rows, middleRows, embedded, chain) : null;
+    const how = !matched ? 'not matched'
+      : rowsByTypedWord(middleRows, chain) ? 'by the words already typed in'
+      : wordsForMiddleRows(middleRows, embedded) ? 'by clue text'
+      : 'by payload order (unverified — no typed word or visible clue contradicted it)';
     const lines = [
       `typed so far: ${known.map((w) => w || '????').join(' ')}`,
       `answers read from the page: ${embedded.length ? embedded.map((e) => e.word).join(', ') : '(none found)'}`,
       `they chain into a ladder: ${chain ? chain.join(' -> ') : 'no'}`,
-      `matched to rows on screen: ${chain && rungsToRows(rows, middleRows, embedded) ? (rungsToRows(rows, middleRows, embedded) || []).join(', ') : 'no'}`,
+      `matched to rows on screen: ${matched ? matched.join(', ') : 'no'}  (${how})`,
       findEmbeddedPuzzleData(wordLength),
     ];
     for (const commonOnly of [true, false]) {
