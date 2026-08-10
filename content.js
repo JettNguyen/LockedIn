@@ -89,11 +89,17 @@
   // Structure the live overlay depends on, as of the last solve. See tick().
   let lastSignature = null;
 
+  // Which game the overlay currently on screen was drawn for, so an overlay
+  // left over from a different puzzle can be told apart from a current one.
+  let overlayGameId = null;
+  let lastPath = location.pathname;
+
   function markSolved() {
     solvedOnThisPage = true;
     consecutiveFailures = 0;
     const game = findActiveGame();
     lastSignature = game && game.signature ? game.signature() : null;
+    overlayGameId = game ? game.id : null;
   }
 
   // Called when we're looking at a board we haven't solved yet: a new URL, or
@@ -124,6 +130,30 @@
     // DOM (SPA navigation, React re-mounting the board). Solve the new one.
     // Distinct from the user clicking ✕, which is meant to stay dismissed.
     if (window.LockedInOverlay.takeAutoDismissed()) resetForFreshBoard();
+
+    // An overlay left over from the game you were looking at BEFORE will block
+    // every attempt at the one you're looking at now, forever.
+    //
+    // tick() bails out while any overlay is up, and an overlay only drops
+    // itself when its own anchor leaves the DOM - which routing between games
+    // client-side does not reliably do. Caught in the act: the URL said
+    // /games/crossclimb/ while the page still held a Queens board with a live
+    // Queens overlay over it, and CrossClimb was never even attempted. This is
+    // the whole reason those games "needed a hard refresh" - a refresh destroys
+    // the page, which is the only thing that was clearing the stale overlay.
+    //
+    // Two ways to know it's stale: it belongs to a different game, or the path
+    // changed under it (same game, new board).
+    if (window.LockedInOverlay.isActive()) {
+      const showing = findActiveGame();
+      const wrongGame = overlayGameId && (!showing || showing.id !== overlayGameId);
+      if (wrongGame || location.pathname !== lastPath) {
+        window.LockedInOverlay.dismiss();
+        overlayGameId = null;
+        resetForFreshBoard();
+      }
+    }
+    lastPath = location.pathname;
 
     // A board can change SHAPE under a live overlay, and an overlay only tracks
     // the cells it was built with. CrossClimb is the case that showed this up:
