@@ -43,16 +43,28 @@ diagBtn.addEventListener('click', async () => {
     }
 
     let response;
+    // Whether the content script was already running is the single most useful
+    // fact about a "the overlay only appears after a hard refresh" report, and
+    // injecting on demand destroys the evidence - by the time the report is
+    // generated the script is there, and the report looks healthy. So record
+    // which of the two happened and say so at the top.
+    let hadToInject = false;
     try {
       response = await sendMessage(tab.id, 'LOCKEDIN_DIAGNOSTICS');
     } catch {
+      hadToInject = true;
       const [{ js, css }] = chrome.runtime.getManifest().content_scripts;
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: js });
       await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: css });
       response = await sendMessage(tab.id, 'LOCKEDIN_DIAGNOSTICS');
     }
 
-    const report = (response && response.report) || 'No report came back from the page.';
+    const banner = hadToInject
+      ? 'content script: WAS NOT RUNNING on this tab — the popup injected it just now.\n' +
+        '                (so everything below describes a script that started seconds ago,\n' +
+        '                 not one that was there when the page loaded)\n'
+      : 'content script: already running before this report was taken.\n';
+    const report = banner + ((response && response.report) || 'No report came back from the page.');
     await navigator.clipboard.writeText(report);
     setStatus(`Copied ${report.split('\n').length} lines to the clipboard.`);
   } catch (err) {

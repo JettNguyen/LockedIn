@@ -86,9 +86,14 @@
   let attempts = 0;
   let lastOutcome = 'no attempt yet';
 
+  // Structure the live overlay depends on, as of the last solve. See tick().
+  let lastSignature = null;
+
   function markSolved() {
     solvedOnThisPage = true;
     consecutiveFailures = 0;
+    const game = findActiveGame();
+    lastSignature = game && game.signature ? game.signature() : null;
   }
 
   // Called when we're looking at a board we haven't solved yet: a new URL, or
@@ -119,6 +124,25 @@
     // DOM (SPA navigation, React re-mounting the board). Solve the new one.
     // Distinct from the user clicking ✕, which is meant to stay dismissed.
     if (window.LockedInOverlay.takeAutoDismissed()) resetForFreshBoard();
+
+    // A board can change SHAPE under a live overlay, and an overlay only tracks
+    // the cells it was built with. CrossClimb is the case that showed this up:
+    // its locked top and bottom rungs have no letter slots until the ladder is
+    // ordered, so the overlay drawn on arrival has no markers for them and the
+    // last two answers never appear, however long you wait.
+    //
+    // Games that can do this expose signature() over whatever structure the
+    // overlay is pinned to; when it moves, redraw against the new board. Only
+    // while our own overlay is up - dismissing it with ✕ means you want it
+    // gone, and it stays gone.
+    if (solvedOnThisPage && !autoSolving && window.LockedInOverlay.isActive()) {
+      const active = findActiveGame();
+      const signature = active && active.signature ? active.signature() : null;
+      if (signature !== null && signature !== lastSignature) {
+        window.LockedInOverlay.dismiss();
+        resetForFreshBoard();
+      }
+    }
 
     if (autoSolving || solvedOnThisPage || window.LockedInOverlay.isActive()) return;
 

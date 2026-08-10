@@ -121,12 +121,42 @@
   // So measure every bar drawn anywhere inside the grid against the grid's own
   // geometry, and block each cell boundary the bar actually covers - however
   // many cells it spans and whichever cell it happens to hang off.
+  // Describes an element compactly enough to re-anchor a scraper against, and
+  // short enough to paste: tag plus its first couple of class tokens.
+  function describeEl(el) {
+    const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    return el.tagName.toLowerCase() + (cls ? `.${cls}` : '');
+  }
+
   function detectWallsAcrossGrid(gridRoot, cellElements, n, walls) {
+    // Returned purely for the debug dump. A bare wall COUNT can't distinguish
+    // "the page draws no bars" from "it draws them and we threw them away", and
+    // those need opposite fixes, so the census records every candidate and what
+    // became of it.
+    const report = { cellW: 0, cellH: 0, bars: [], minThickness: null, painting: [] };
+
     const rects = cellElements.map((row) => row.map((el) => el.getBoundingClientRect()));
     const cellW = rects[0][0].width;
     const cellH = rects[0][0].height;
-    if (!(cellW > 0) || !(cellH > 0)) return;
+    if (!(cellW > 0) || !(cellH > 0)) return report;
     const cellMin = Math.min(cellW, cellH);
+    report.cellW = cellW;
+    report.cellH = cellH;
+
+    // If the page stops painting walls as their own elements - a border or a
+    // shadow on the cell, a ::before - there is nothing here to measure and no
+    // amount of tuning helps. Worth knowing outright rather than inferring.
+    let borderCells = 0;
+    let shadowCells = 0;
+    for (const row of cellElements) {
+      for (const el of row) {
+        if (detectWallSideByBorder(el)) borderCells++;
+        const shadow = getComputedStyle(el).boxShadow;
+        if (shadow && shadow !== 'none') shadowCells++;
+      }
+    }
+    if (borderCells) report.painting.push(`${borderCells} cell(s) carry a one-sided thick border of their own`);
+    if (shadowCells) report.painting.push(`${shadowCells} cell(s) carry a box-shadow`);
 
     // Candidate bars: thin on one axis, long on the other.
     const bars = [];
@@ -135,19 +165,29 @@
       if (el.dataset && (el.dataset.testid === 'filled-cell' || el.dataset.cellContent)) continue;
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
-      if (r.width < cellW * 0.5 && r.height >= cellH * 0.5) bars.push({ r, vertical: true, thickness: r.width });
-      else if (r.height < cellH * 0.5 && r.width >= cellW * 0.5) bars.push({ r, vertical: false, thickness: r.height });
+      if (r.width < cellW * 0.5 && r.height >= cellH * 0.5) bars.push({ r, el, vertical: true, thickness: r.width });
+      else if (r.height < cellH * 0.5 && r.width >= cellW * 0.5) bars.push({ r, el, vertical: false, thickness: r.height });
     }
-    if (!bars.length) return;
+    if (!bars.length) return report;
 
     // Grid rules are hairlines and walls are substantial, so keep the thick
     // ones. Both an absolute floor and a share of the thickest bar, so this
     // doesn't start calling 1px rules walls on a board that has none.
     const thickest = Math.max(...bars.map((b) => b.thickness));
     const minThickness = Math.max(MIN_WALL_PX, cellMin * 0.05, thickest * 0.5);
+    report.minThickness = minThickness;
 
     for (const bar of bars) {
-      if (bar.thickness < minThickness) continue;
+      const note = {
+        what: describeEl(bar.el),
+        vertical: bar.vertical,
+        thickness: bar.thickness,
+        cells: bar.vertical ? bar.r.height / cellH : bar.r.width / cellW,
+        kept: bar.thickness >= minThickness,
+        blocked: 0,
+      };
+      report.bars.push(note);
+      if (!note.kept) continue;
 
       if (bar.vertical) {
         const x = bar.r.left + bar.r.width / 2;
@@ -159,6 +199,7 @@
             if (overlap < cellH * 0.5) continue;
             walls[r][c].right = true;
             walls[r][c + 1].left = true;
+            note.blocked++;
           }
         }
       } else {
@@ -171,10 +212,13 @@
             if (overlap < cellW * 0.5) continue;
             walls[r][c].bottom = true;
             walls[r + 1][c].top = true;
+            note.blocked++;
           }
         }
       }
     }
+
+    return report;
   }
 
   function scrapeBoard(gridRoot) {
@@ -231,7 +275,7 @@
 
     // Now that every cell is known, sweep the grid for wall bars spanning more
     // than one cell — the per-cell pass above can't see those.
-    detectWallsAcrossGrid(gridRoot, cellElements, n, wallsGeometric);
+    const wallScan = detectWallsAcrossGrid(gridRoot, cellElements, n, wallsGeometric);
 
     if (![...waypoints.values()].includes(1)) {
       return { ok: false, error: 'Could not find the starting cell (numbered 1).' };
@@ -240,7 +284,7 @@
       return { ok: false, error: 'Too few numbered waypoints found on this board.' };
     }
 
-    return { ok: true, size: n, waypoints, cellElements, wallsGeometric, wallsByClass };
+    return { ok: true, size: n, waypoints, cellElements, wallsGeometric, wallsByClass, wallScan };
   }
 
   function isCellDrawn(cellEl) {
@@ -338,6 +382,39 @@
   // Prints the scraped board as ASCII with both wall readings, so a mismatch
   // between what's on screen and what we scraped is visible in one glance.
   // Run `LockedInDebug.zip()` in the console on the Zip page.
+  // The census of bar-shaped elements behind the geometry reading. When walls
+  // go missing this is the line that says which of the two very different
+  // causes it is: the page never drew a bar we could see, or it did and the
+  // thickness filter discarded it.
+  function renderWallScan(scan) {
+    if (!scan) return 'wall scan: (not run)';
+    const lines = [`wall scan: cell ${scan.cellW.toFixed(0)}x${scan.cellH.toFixed(0)}px`];
+    for (const note of scan.painting) lines.push(`  also: ${note}`);
+    if (!scan.bars.length) {
+      lines.push('  NO bar-shaped elements anywhere in the grid — the page is not painting walls as');
+      lines.push('  elements we can measure (a pseudo-element or a gradient would look like this).');
+      return lines.join('\n');
+    }
+
+    lines.push(`  kept anything at least ${scan.minThickness.toFixed(1)}px thick:`);
+    const groups = new Map();
+    for (const b of scan.bars) {
+      const key = [b.what, b.vertical, b.thickness.toFixed(1), Math.round(b.cells), b.kept].join('|');
+      const g = groups.get(key) || { ...b, count: 0, blocked: 0 };
+      g.count++;
+      g.blocked += b.blocked;
+      groups.set(key, g);
+    }
+    for (const g of [...groups.values()].sort((a, b) => b.thickness - a.thickness)) {
+      lines.push(
+        `    ${g.thickness.toFixed(1).padStart(6)}px  ${g.vertical ? 'vertical  ' : 'horizontal'}` +
+        `  spans ~${Math.round(g.cells)} cell(s)  x${g.count}  ${g.what}` +
+        `  ${g.kept ? `-> blocked ${g.blocked} boundaries` : '-> DISCARDED as too thin'}`
+      );
+    }
+    return lines.join('\n');
+  }
+
   function debugDump() {
     const gridRoot = findGrid();
     if (!gridRoot) return 'No Zip grid on this page.';
@@ -378,6 +455,8 @@
     return [
       `Zip ${scrape.size}x${scrape.size} — ${scrape.waypoints.size} waypoints`,
       `board state: ${stateNote}`,
+      '',
+      renderWallScan(scrape.wallScan),
       `\nGeometry (${countWalls(scrape.wallsGeometric)} walls, used first):`,
       render(scrape.wallsGeometric),
       `\nHashed classes (${countWalls(scrape.wallsByClass)} walls, fallback):`,

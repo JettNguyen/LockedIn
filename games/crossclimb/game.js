@@ -357,8 +357,38 @@
     return !expected || current === expected.toUpperCase();
   }
 
-  function showBadges(grid, middleRows, position, word, typed) {
+  // Spell a word across a row's letter slots. Shared by the draggable rungs and
+  // by the locked top/bottom pair, which have no position to show - they never
+  // move - but still have to be filled in, and are the last thing left on the
+  // board once the ladder is ordered.
+  function spellInto(markers, row, word, color) {
+    const cells = letterCellsOf(row, word);
+    if (!cells) return false;
+    for (let j = 0; j < cells.length; j++) {
+      markers.push({
+        cellEl: cells[j],
+        glyph: word[j],
+        color,
+        isFilled: () => letterTyped(row, j),
+      });
+    }
+    return true;
+  }
+
+  const END_COLOR = '#ff8a3d';
+
+  function showBadges(grid, middleRows, position, word, typed, ends = []) {
     const markers = [];
+
+    // The locked rungs only grow letter slots once the ladder is ordered, so on
+    // an unsolved board there is nothing to draw on and this quietly does
+    // nothing until there is.
+    for (const end of ends) {
+      if (end && end.row && end.word && !end.row.word) {
+        spellInto(markers, end.row, end.word, END_COLOR);
+      }
+    }
+
     for (let i = 0; i < middleRows.length; i++) {
       const pos = position[i];
       if (!pos) continue; // genuinely ambiguous - say nothing rather than guess
@@ -375,17 +405,9 @@
         isFilled: () => currentPositionOf(row.rowEl) === pos && rowSettled(row, word[i]),
       });
 
-      if (!letterCells) continue;
-      for (let j = 0; j < letterCells.length; j++) {
-        markers.push({
-          cellEl: letterCells[j],
-          glyph: answer[j],
-          color,
-          // Clears letter by letter as you type, so what's still showing is
-          // exactly what's still to type.
-          isFilled: () => letterTyped(row, j),
-        });
-      }
+      // Clears letter by letter as you type, so what's still showing is
+      // exactly what's still to type.
+      if (letterCells) spellInto(markers, row, answer, color);
     }
     window.LockedInOverlay.show({ anchorEl: grid, markers });
   }
@@ -458,9 +480,11 @@
       }
     }
 
+    const payloadEnds = [{ row: topRow, word: payloadTop }, { row: bottomRow, word: payloadBottom }];
+
     // The page told us both the words and where they go: draw it.
     if (payloadPositions) {
-      showBadges(grid, middleRows, payloadPositions, known, typed);
+      showBadges(grid, middleRows, payloadPositions, known, typed, payloadEnds);
       return { ok: true };
     }
     const filledCount = known.filter(Boolean).length;
@@ -515,7 +539,21 @@
       };
     }
 
-    showBadges(grid, middleRows, position, word, typed);
+    // Without the payload the locked rungs are only knowable when the ladder is
+    // pinned down AND exactly one real word extends it at that end. Usually
+    // several do, and then this says nothing - the clue for those two rows is a
+    // pun on the pair, which no amount of graph search is going to get.
+    const ends = payloadEnds;
+    if (ladders.length === 1) {
+      const ladder = ladders[0].words.map((w) => w.toUpperCase());
+      for (const [i, endWord] of [[0, ladder[0]], [1, ladder[ladder.length - 1]]]) {
+        if (ends[i].word) continue;
+        const options = endCandidates(endWord, ladder, graph);
+        if (options.length === 1) ends[i] = { row: ends[i].row, word: options[0] };
+      }
+    }
+
+    showBadges(grid, middleRows, position, word, typed, ends);
     return { ok: true };
   }
 
@@ -942,6 +980,18 @@
     label: 'CrossClimb',
     detect: () => window.LockedInDetect.gameDetector('crossclimb')(),
     run,
+    // The locked rungs grow their letter slots only once the ladder is ordered,
+    // which is a change no marker on the existing overlay can react to. Slot
+    // counts per row capture exactly that and nothing else: typing doesn't move
+    // them, and dragging rungs around doesn't either, since every middle rung
+    // has the same number.
+    signature: () => {
+      const grid = findGrid();
+      if (!grid) return null;
+      return Array.from(grid.querySelectorAll('[data-guess-id]'))
+        .map((rowEl) => guessInputs(rowEl).length)
+        .join(',');
+    },
     diagnose: debugDump,
   });
 })();
