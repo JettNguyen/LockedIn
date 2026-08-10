@@ -415,6 +415,83 @@
     return lines.join('\n');
   }
 
+  // Last resort, for when the bar scan finds nothing: work out how the page is
+  // painting walls by looking for what makes a walled cell different.
+  //
+  // No assumption about the mechanism - it reads every paint-ish property, on
+  // the cell, on its descendants, and on their ::before/::after (which are
+  // invisible to querySelectorAll and are the obvious way to draw a wall
+  // without adding an element). Whatever paints a wall must appear on the
+  // handful of cells that have one and not on the rest, so anything present on
+  // a MINORITY of cells is a candidate and everything universal is chrome.
+  //
+  // The cell list against each candidate is the proof: compare it to the walls
+  // actually drawn on the board and the right property is the one that matches.
+  function probeWallPainting(cellElements, n) {
+    const PSEUDOS = [null, '::before', '::after'];
+    const PROPS = [
+      'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+      'backgroundImage', 'boxShadow', 'outlineWidth', 'width', 'height',
+    ];
+    const total = n * n;
+    const seen = new Map(); // description → Set of "r,c"
+    let svgCount = 0;
+    let zeroSized = 0;
+
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        const cell = cellElements[r][c];
+        for (const el of [cell, ...cell.querySelectorAll('*')]) {
+          if (el.tagName && el.tagName.toLowerCase() === 'svg') svgCount++;
+          if (el !== cell) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) zeroSized++;
+          }
+          for (const pseudo of PSEUDOS) {
+            let cs;
+            try { cs = getComputedStyle(el, pseudo); } catch (_) { continue; }
+            if (!cs) continue;
+            // A pseudo-element with no content box isn't rendered at all.
+            if (pseudo && (cs.content === 'none' || !cs.content)) continue;
+            for (const prop of PROPS) {
+              const value = cs[prop];
+              if (!value || value === 'none' || value === '0px' || value === 'auto') continue;
+              // width/height only matter when they look like a bar.
+              if ((prop === 'width' || prop === 'height') && !pseudo) continue;
+              const where = el === cell ? 'cell' : describeEl(el);
+              const short = value.length > 48 ? `${value.slice(0, 45)}...` : value;
+              const key = `${where}${pseudo || ''}  ${prop}: ${short}`;
+              if (!seen.has(key)) seen.set(key, new Set());
+              seen.get(key).add(`${r},${c}`);
+            }
+          }
+        }
+      }
+    }
+
+    const candidates = [...seen.entries()]
+      .filter(([, cells]) => cells.size > 0 && cells.size < total * 0.6)
+      .sort((a, b) => a[1].size - b[1].size);
+
+    const lines = [
+      'wall paint probe (what makes a walled cell different from a plain one):',
+      `  ${seen.size} distinct paint properties across ${total} cells; ` +
+      `${svgCount} <svg> inside cells; ${zeroSized} zero-sized descendants`,
+    ];
+    if (!candidates.length) {
+      lines.push('  nothing appears on only some cells — every cell paints identically, so the');
+      lines.push('  walls are not being drawn by CSS on the cells at all (canvas, or an overlay');
+      lines.push('  layer outside the grid element).');
+      return lines.join('\n');
+    }
+    lines.push('  properties present on only SOME cells (a wall must be one of these):');
+    for (const [key, cells] of candidates.slice(0, 14)) {
+      lines.push(`    [${String(cells.size).padStart(2)} cells] ${key}`);
+      lines.push(`               at ${[...cells].slice(0, 14).join('  ')}${cells.size > 14 ? '  ...' : ''}`);
+    }
+    return lines.join('\n');
+  }
+
   function debugDump() {
     const gridRoot = findGrid();
     if (!gridRoot) return 'No Zip grid on this page.';
@@ -457,6 +534,10 @@
       `board state: ${stateNote}`,
       '',
       renderWallScan(scrape.wallScan),
+      // Only worth the noise when the normal reading came up empty.
+      countWalls(scrape.wallsGeometric) === 0 && countWalls(scrape.wallsByClass) === 0
+        ? `\n${probeWallPainting(scrape.cellElements, scrape.size)}`
+        : '',
       `\nGeometry (${countWalls(scrape.wallsGeometric)} walls, used first):`,
       render(scrape.wallsGeometric),
       `\nHashed classes (${countWalls(scrape.wallsByClass)} walls, fallback):`,
