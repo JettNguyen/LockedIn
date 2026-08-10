@@ -109,6 +109,45 @@
 
   const isCellEl = (el) => /^cell-\d+$/.test((el.dataset && el.dataset.testid) || '');
 
+  // Walls painted on a ::before / ::after.
+  //
+  // This is how LinkedIn actually draws them, and it defeated every reading
+  // above for the same reason: a pseudo-element is not in the DOM. It cannot be
+  // returned by querySelectorAll, it has no getBoundingClientRect, and it hangs
+  // off a div that only exists on cells that have a wall - so the bar scan
+  // measured an empty grid and reported, honestly and uselessly, no walls at
+  // all. getComputedStyle's second argument is the only way to see one.
+  //
+  // Confirmed against a 7x7 board where the twelve cells carrying a 12px
+  // ::after border-right were exactly the twelve whose right-hand boundary was
+  // walled, with border-left naming the same twelve boundaries from the far
+  // side. The hashed class the pseudo hangs off is deliberately not matched on;
+  // those rotate, and the border is the thing that means "wall".
+  function detectPseudoWalls(cellEl, walls, minPx) {
+    for (const el of [cellEl, ...cellEl.querySelectorAll('*')]) {
+      for (const pseudo of ['::before', '::after']) {
+        let cs;
+        try {
+          cs = getComputedStyle(el, pseudo);
+        } catch (_) {
+          continue;
+        }
+        // No content box means the pseudo isn't rendered, whatever it declares.
+        if (!cs || !cs.content || cs.content === 'none') continue;
+
+        const sides = [];
+        for (const side of SIDES) {
+          if ((parseFloat(cs[BORDER_WIDTH_PROP[side]]) || 0) >= minPx) sides.push(side);
+        }
+        // All four thick is a box outline rather than a wall - and a cell walled
+        // in on every side could not be part of any path, so nothing is lost by
+        // declining to believe it.
+        if (!sides.length || sides.length === 4) continue;
+        for (const side of sides) walls[side] = true;
+      }
+    }
+  }
+
   // Grid-wide wall scan.
   //
   // This used to run per cell, over each cell's own children, and that is what
@@ -275,7 +314,35 @@
 
     // Now that every cell is known, sweep the grid for wall bars spanning more
     // than one cell — the per-cell pass above can't see those.
+    // Pseudo-element borders first — this is how the walls are actually drawn.
+    // The bar scan afterwards still earns its place: it catches a run of wall
+    // drawn as one real element spanning several cells, which the per-cell pass
+    // can't see, and the two only ever add walls, so reading both is safe.
+    const cell0 = cellElements[0][0].getBoundingClientRect();
+    const minWallPx = Math.max(MIN_WALL_PX, Math.min(cell0.width, cell0.height) * 0.05);
+    let pseudoWalls = 0;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        detectPseudoWalls(cellElements[r][c], wallsGeometric[r][c], minWallPx);
+      }
+    }
+    // Mirror each wall onto the cell across the boundary. Zip paints both sides
+    // of most boundaries, but not all, and a wall known from one side only is
+    // still a wall.
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        const w = wallsGeometric[r][c];
+        for (const side of SIDES) if (w[side]) pseudoWalls++;
+        if (w.right && c + 1 < n) wallsGeometric[r][c + 1].left = true;
+        if (w.left && c > 0) wallsGeometric[r][c - 1].right = true;
+        if (w.bottom && r + 1 < n) wallsGeometric[r + 1][c].top = true;
+        if (w.top && r > 0) wallsGeometric[r - 1][c].bottom = true;
+      }
+    }
+
     const wallScan = detectWallsAcrossGrid(gridRoot, cellElements, n, wallsGeometric);
+    wallScan.pseudoWalls = pseudoWalls;
+    wallScan.minWallPx = minWallPx;
 
     if (![...waypoints.values()].includes(1)) {
       return { ok: false, error: 'Could not find the starting cell (numbered 1).' };
@@ -389,6 +456,10 @@
   function renderWallScan(scan) {
     if (!scan) return 'wall scan: (not run)';
     const lines = [`wall scan: cell ${scan.cellW.toFixed(0)}x${scan.cellH.toFixed(0)}px`];
+    lines.push(
+      `  ::before/::after borders at least ${(scan.minWallPx || 0).toFixed(1)}px: ` +
+      `${scan.pseudoWalls || 0} wall side(s) — this is how the page draws them`
+    );
     for (const note of scan.painting) lines.push(`  also: ${note}`);
     if (!scan.bars.length) {
       lines.push('  NO bar-shaped elements anywhere in the grid — the page is not painting walls as');
