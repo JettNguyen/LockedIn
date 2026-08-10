@@ -54,8 +54,9 @@ diagBtn.addEventListener('click', async () => {
     } catch {
       hadToInject = true;
       const [{ js, css }] = chrome.runtime.getManifest().content_scripts;
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: js });
-      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: css });
+      // allFrames, to match the manifest: the puzzle is often in an iframe.
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: js });
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id, allFrames: true }, files: css });
       response = await sendMessage(tab.id, 'LOCKEDIN_DIAGNOSTICS');
     }
 
@@ -97,13 +98,23 @@ solveBtn.addEventListener('click', async () => {
       // manifest (rather than hardcoding it here) means adding a new game's
       // files to content_scripts.js is the only place that needs updating.
       const [{ js, css }] = chrome.runtime.getManifest().content_scripts;
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: js });
-      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: css });
-      response = await sendSolveMessage(tab.id);
+      // allFrames, to match the manifest: the puzzle is often in an iframe.
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: js });
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id, allFrames: true }, files: css });
+      try {
+        response = await sendSolveMessage(tab.id);
+      } catch {
+        // The script is certainly present now, so silence is not "no script" -
+        // it's every frame declining to answer, which they only do when none of
+        // them contains a puzzle.
+        response = null;
+      }
     }
 
     if (!response) {
-      setStatus('Error: no response from the page.');
+      // Frames without a puzzle stay silent so they can't beat the one that has
+      // it to the reply, so silence from every frame is the answer itself.
+      setStatus("No supported LinkedIn game on this page.");
     } else if (response.ok) {
       setStatus('Solved!');
     } else {

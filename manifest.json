@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LockedIn",
-  "version": "1.22.0",
+  "version": "1.23.0",
   "description": "Solves LinkedIn's puzzle games (Queens, Tango, Mini Sudoku, Zip, Patches, Wend, CrossClimb) and overlays the solution on top of the page without touching the underlying DOM.",
   "permissions": ["activeTab", "scripting"],
   "action": {
@@ -10,13 +10,15 @@
   "web_accessible_resources": [
     {
       "resources": ["shared/words.txt", "shared/common-words.txt"],
-      "matches": ["https://www.linkedin.com/*"]
+      "matches": ["https://*.linkedin.com/*"]
     }
   ],
   "content_scripts": [
     {
       "//": "Matches all of linkedin.com, not just /games/*, and every game's detect() gates the rest. Chrome only injects a content script on a real document load, so a /games/* match meant that reaching a puzzle the normal way - clicking through from the feed, which LinkedIn routes client-side with no document load - left no script in the page at all. That's why Zip and Mini Sudoku only ever appeared after a hard refresh or a manual Solve (the popup force-injects). Matching every LinkedIn page means the script is already there when the SPA routes into a game, and the heartbeat in content.js notices the URL change.",
-      "matches": ["https://www.linkedin.com/*"],
+      "//2": "all_frames, because LinkedIn renders a game reached by client-side navigation inside an iframe. The top document is then a ~700-element shell with no puzzle markup in it at all, so every selector correctly reported 'no grid' while the board sat there on screen - which is the entire reason Mini Sudoku and CrossClimb only worked after a hard refresh (a real page load renders the puzzle inline). Subdomains are matched for the same reason: the frame need not be on www.",
+      "matches": ["https://*.linkedin.com/*"],
+      "all_frames": true,
       "js": [
         "shared/detect.js",
         "shared/overlay.js",

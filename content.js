@@ -187,11 +187,38 @@
   // Everything worth knowing when a game misbehaves, in one block of text:
   // which game matched, why the last solve attempt ended the way it did, and
   // whatever that game can say about the board it scraped.
+  const isTopFrame = (() => {
+    try {
+      return window.top === window;
+    } catch (_) {
+      return false; // cross-origin parent; we're definitely in a frame
+    }
+  })();
+
+  // Which frame this is, and what frames sit inside it. This is the fact that
+  // explained "the game only works after a hard refresh": reached by client-side
+  // navigation the puzzle renders in an iframe, and a script confined to the top
+  // document truthfully reports no grid while the board is plainly on screen.
+  function describeFrames() {
+    const frames = Array.from(document.querySelectorAll('iframe'));
+    const srcs = frames
+      .map((f) => {
+        const src = f.getAttribute('src') || '(no src)';
+        return src.length > 70 ? `${src.slice(0, 67)}...` : src;
+      })
+      .slice(0, 6);
+    return [
+      `frame:             ${isTopFrame ? 'top document' : 'INSIDE AN IFRAME'}`,
+      `iframes in here:   ${frames.length}${srcs.length ? `  → ${srcs.join('  ')}` : ''}`,
+    ];
+  }
+
   async function buildDiagnostics() {
     const games = window.LockedInGames || [];
     const active = games.filter((g) => g.detect());
     const lines = [
       `url:               ${location.href}`,
+      ...describeFrames(),
       `extension version: ${chrome.runtime.getManifest().version}`,
       `games registered:  ${games.map((g) => g.id).join(', ') || '(none — the content scripts did not all load)'}`,
       `detect() matches:  ${active.map((g) => g.id).join(', ') || '(NONE — this is why nothing happens)'}`,
@@ -218,15 +245,33 @@
     return lines.join('\n');
   }
 
+  // The script now runs in every frame, so one message reaches all of them and
+  // Chrome delivers only the FIRST reply. A frame with no puzzle in it must not
+  // win that race, or the popup reports "not supported" from an empty shell
+  // while the frame actually holding the board is still working. So:
+  //
+  //   Solve       - only a frame with a game answers at all. Silence means no
+  //                 frame has one, which popup.js reports as such.
+  //   Diagnostics - a frame with a game answers at once; the others hang back,
+  //                 nearest-to-the-user first, because a report from an empty
+  //                 page is still worth having when nothing matched anywhere.
+  // Generous, because it is only ever paid when NO frame has a puzzle: a real
+  // diagnose() runs a solver and can take the better part of a second, and a
+  // shell frame answering first would replace the one report worth reading.
+  const QUIET_FRAME_DELAY_MS = isTopFrame ? 1500 : 2000;
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message && message.type === 'LOCKEDIN_DIAGNOSTICS') {
+      const delay = findActiveGame() ? 0 : QUIET_FRAME_DELAY_MS;
+      const reply = (report) => setTimeout(() => sendResponse({ report }), delay);
       buildDiagnostics()
-        .then((report) => sendResponse({ report }))
-        .catch((err) => sendResponse({ report: `Diagnostics failed: ${err && err.message ? err.message : err}` }));
+        .then(reply)
+        .catch((err) => reply(`Diagnostics failed: ${err && err.message ? err.message : err}`));
       return true;
     }
 
     if (!message || message.type !== 'LOCKEDIN_SOLVE') return;
+    if (!findActiveGame()) return; // let whichever frame holds the board answer
 
     solveAndRender({ force: true })
       .then((result) => {

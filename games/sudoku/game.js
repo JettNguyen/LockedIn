@@ -35,10 +35,23 @@
 // test rather than a guess at how long LinkedIn takes to paint.
 
 (function () {
+  // The canonical markup is a .sudoku-grid inside [data-sudoku-grid="true"],
+  // and requiring both is what made this game need a hard refresh: reaching the
+  // puzzle by client-side navigation renders something that pair of selectors
+  // misses, so the board sat there fully drawn while the scraper reported no
+  // grid, over and over, until a real page load produced the canonical markup.
+  //
+  // Each fallback drops one assumption - first the wrapper, then the grid's own
+  // class - ending at the cells themselves, which is the part that has to exist
+  // for there to be a puzzle at all.
   function findGrid() {
     const root = document.querySelector('[data-sudoku-grid="true"]');
-    if (!root) return null;
-    return root.querySelector('.sudoku-grid');
+    return (
+      (root && root.querySelector('.sudoku-grid')) ||
+      document.querySelector('.sudoku-grid') ||
+      (root && root.querySelector('.sudoku-cell') && root) ||
+      window.LockedInDetect.commonAncestorOf('.sudoku-cell')
+    );
   }
 
   function readGridDims(gridRoot, cellCount) {
@@ -205,11 +218,64 @@
     return { ok: true };
   }
 
+  // This game had no board report at all, which is exactly why "Mini Sudoku
+  // needs a hard refresh" stayed unexplained for so long: the diagnostics named
+  // the failure ("could not find the grid") and then printed a blank line where
+  // the reason should have been. When the grid is missing, say what the page
+  // has instead; when it's found, say which selector found it, since a fallback
+  // doing the work is the signal that the canonical markup has moved again.
+  function debugDump() {
+    const canonical = document.querySelector('[data-sudoku-grid="true"]');
+    const gridRoot = findGrid();
+    if (!gridRoot) {
+      return [
+        'No Mini Sudoku grid on this page — none of the selectors matched.',
+        `  [data-sudoku-grid="true"]: ${canonical ? 'present' : 'MISSING'}`,
+        `  .sudoku-grid:              ${document.querySelector('.sudoku-grid') ? 'present' : 'MISSING'}`,
+        `  .sudoku-cell:              ${document.querySelectorAll('.sudoku-cell').length} found`,
+        window.LockedInDetect.describePage(/sudoku|cell|grid|board|puzzle/i),
+      ].join('\n');
+    }
+
+    const via =
+      canonical && canonical.querySelector('.sudoku-grid') ? 'the canonical wrapper + .sudoku-grid'
+      : document.querySelector('.sudoku-grid') ? '.sudoku-grid alone (wrapper missing — fallback)'
+      : canonical ? 'the wrapper, cells found directly inside it (fallback)'
+      : 'the common ancestor of .sudoku-cell (last-resort fallback)';
+
+    const scrape = scrapeBoard(gridRoot);
+    if (!scrape.ok) return `grid found via ${via}, but: ${scrape.error}`;
+
+    const n = scrape.size;
+    const solutions = solveSudokuSolutions(
+      { size: n, boxOf: scrape.boxOf, given: scrape.given },
+      2
+    );
+    const rows = [];
+    for (let r = 0; r < n; r++) {
+      const cells = [];
+      for (let c = 0; c < n; c++) cells.push(scrape.given.get(`${r},${c}`) || '·');
+      rows.push('  ' + cells.join(' '));
+    }
+    return [
+      `Mini Sudoku ${n}x${n} — ${scrape.given.size} givens`,
+      `grid found via ${via}`,
+      // Two solutions means the digits hadn't finished painting when this was
+      // read, not that the puzzle is genuinely ambiguous.
+      `distinct solutions: ${solutions.length > 1 ? '2+ (board still loading)' : solutions.length}`,
+      ...rows,
+    ].join('\n');
+  }
+
+  window.LockedInDebug = window.LockedInDebug || {};
+  window.LockedInDebug.sudoku = () => console.log(debugDump());
+
   window.LockedInGames = window.LockedInGames || [];
   window.LockedInGames.push({
     id: 'sudoku',
     label: 'Mini Sudoku',
     detect: () => window.LockedInDetect.gameDetector('mini-sudoku', 'sudoku')(),
     run,
+    diagnose: debugDump,
   });
 })();
