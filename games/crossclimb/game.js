@@ -15,6 +15,11 @@
 // its place in the ladder. That solves a completely blank board outright, with
 // nothing typed in.
 //
+// The payload lists the ladder in one direction, but the same ladder read
+// bottom-to-top is equally valid and LinkedIn accepts it, so which way up to
+// draw it is the board's call rather than the payload's - and that decides
+// which locked rung gets which end word, not just how far anything drags.
+//
 // Matching a payload rung to a row on screen goes by clue text where it can,
 // but the board shows its clues one at a time in a carousel, so usually only
 // the focused rung's clue is in the DOM at all - which is why the first attempt
@@ -225,17 +230,48 @@
   // already arranged on screen - fewest drags to get there, and no worse than a
   // coin flip when the board can't say.
   function pickOrientation(variants, middleRows) {
+    const current = currentPositions(middleRows);
     let best = variants[0];
     let bestCost = Infinity;
     for (const variant of variants) {
       let cost = 0;
       for (let slot = 0; slot < variant.order.length; slot++) {
-        const current = currentPositionOf(middleRows[variant.order[slot]].rowEl);
-        cost += current === -1 ? 0 : Math.abs(current - (slot + 1));
+        const at = current[variant.order[slot]];
+        cost += at === -1 ? 0 : Math.abs(at - (slot + 1));
       }
       if (cost < bestCost) { bestCost = cost; best = variant; }
     }
     return best;
+  }
+
+  // Would the ladder read upside down sit closer to how the rungs are already
+  // arranged? `slots[i]` is the top-to-bottom slot the ladder's own orientation
+  // gives middle row i. Ties keep that orientation.
+  function mirrorFitsBetter(slots, middleRows) {
+    const current = currentPositions(middleRows);
+    const n = middleRows.length;
+    let forward = 0;
+    let mirrored = 0;
+    for (let i = 0; i < n; i++) {
+      if (current[i] === -1) continue;
+      forward += Math.abs(current[i] - slots[i]);
+      mirrored += Math.abs(current[i] - (n + 1 - slots[i]));
+    }
+    return mirrored < forward;
+  }
+
+  // A locked end rung you've already filled in settles the direction outright,
+  // whatever the arrangement of the middle rungs suggests. Returns true if the
+  // board runs opposite to `oriented`, false if it agrees, null if it can't say.
+  function endsSayReversed(oriented, topRow, bottomRow) {
+    const head = oriented[0];
+    const tail = oriented[oriented.length - 1];
+    for (const [row, agrees, opposes] of [[topRow, head, tail], [bottomRow, tail, head]]) {
+      if (!row || !row.word) continue;
+      if (row.word === agrees) return false;
+      if (row.word === opposes) return true;
+    }
+    return null;
   }
 
   // Collapse the solution set down to what every solution agrees on. A rung's
@@ -279,12 +315,25 @@
 
   // ── Position tracking ──────────────────────────────────────────────────────
 
-  function currentPositionOf(rowEl) {
-    const list = rowEl.closest('ol.crossclimb__guess__container');
-    if (!list) return -1;
-    const items = Array.from(list.querySelectorAll('[data-sortable-item="true"]'));
-    const idx = items.indexOf(rowEl);
-    return idx === -1 ? -1 : idx + 1;
+  // Where each middle rung sits on screen right now, 1 = topmost, parallel to
+  // `middleRows` (which is in data-guess-id order - the board you were dealt,
+  // not the board you have).
+  //
+  // Ranking by document order rather than by index in the sortable list is
+  // deliberate: LinkedIn marks the rungs data-sortable-item only while they can
+  // still be dragged, so once the ladder is locked in that list is empty and
+  // every rung reads as "position unknown". That is exactly the board that has
+  // to be read, because a finished ladder ordered bottom-to-top is a mirror of
+  // the one the payload describes, and nothing else on the page says so.
+  function currentPositions(middleRows) {
+    const positions = new Array(middleRows.length).fill(-1);
+    middleRows
+      .map((row, i) => ({ i, rowEl: row.rowEl }))
+      .filter(({ rowEl }) => document.body.contains(rowEl))
+      .sort((a, b) =>
+        a.rowEl.compareDocumentPosition(b.rowEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
+      .forEach((entry, slot) => { positions[entry.i] = slot + 1; });
+    return positions;
   }
 
   // ── Marker appearance ──────────────────────────────────────────────────────
@@ -369,6 +418,11 @@
         cellEl: cells[j],
         glyph: word[j],
         color,
+        // A letter slot is empty until you type in it, so the marker isn't
+        // sharing the box with anything and can have most of it. At the
+        // overlay's default scale these came out around the size of the board's
+        // own placeholder text and had to be leaned in at to read.
+        fontScale: 0.85,
         isFilled: () => letterTyped(row, j),
       });
     }
@@ -402,7 +456,7 @@
         cellEl: row.dragger || (row.boxes.length > 0 ? row.boxes[0] : row.rowEl),
         html: badgeHtml(pos, letterCells ? '' : (answer || '')),
         color,
-        isFilled: () => currentPositionOf(row.rowEl) === pos && rowSettled(row, word[i]),
+        isFilled: () => currentPositions(middleRows)[i] === pos && rowSettled(row, word[i]),
       });
 
       // Clears letter by letter as you type, so what's still showing is
@@ -459,23 +513,42 @@
 
         // solutionRungIndex is the payload saying outright where each rung
         // belongs, so rank the matched words by it and the drag order is done -
-        // no ladder search, no orientation guess, nothing left to deduce.
+        // no ladder search, nothing left to deduce.
         const indices = matched.map((w) => indexOf.get(w));
+        let slots = null;
         if (indices.every(Number.isInteger) && new Set(indices).size === indices.length) {
           const ranked = [...indices].sort((a, b) => a - b);
-          payloadPositions = indices.map((i) => ranked.indexOf(i) + 1);
+          slots = indices.map((i) => ranked.indexOf(i) + 1);
         }
 
-        // If it didn't, the chain's two ends are still the locked top and
-        // bottom rungs, and naming them settles the one thing the ladder rule
-        // can never settle on its own: which way up it goes.
+        // The chain's two ends are the locked top and bottom rungs, and the
+        // payload's indices say which end is which.
         const first = indexOf.get(chain[0]);
         const last = indexOf.get(chain[chain.length - 1]);
-        if (Number.isInteger(first) && Number.isInteger(last) && first !== last &&
-            chain.length === middleRows.length + 2) {
-          const oriented = first < last ? chain : [...chain].reverse();
-          payloadTop = oriented[0];
-          payloadBottom = oriented[oriented.length - 1];
+        const oriented =
+          Number.isInteger(first) && Number.isInteger(last) && first !== last &&
+          chain.length === middleRows.length + 2
+            ? (first < last ? chain : [...chain].reverse())
+            : null;
+
+        // Which way up it goes on *this* board is still the board's call. The
+        // same ladder read bottom-to-top is equally valid and LinkedIn accepts
+        // it, so a board already ordered that way wants the mirror of what the
+        // payload lists - and at the ends that isn't a matter of extra dragging,
+        // it's the difference between the top rung's word and the bottom one's.
+        const fromEnds = oriented ? endsSayReversed(oriented, topRow, bottomRow) : null;
+        const reversed = fromEnds !== null
+          ? fromEnds
+          : !!(slots && mirrorFitsBetter(slots, middleRows));
+
+        if (slots) {
+          payloadPositions = reversed
+            ? slots.map((p) => middleRows.length + 1 - p)
+            : slots;
+        }
+        if (oriented) {
+          payloadTop = reversed ? oriented[oriented.length - 1] : oriented[0];
+          payloadBottom = reversed ? oriented[0] : oriented[oriented.length - 1];
         }
       }
     }
@@ -937,6 +1010,10 @@
       : 'by payload order (unverified — no typed word or visible clue contradicted it)';
     const lines = [
       `typed so far: ${known.map((w) => w || '????').join(' ')}`,
+      // Rungs are listed in data-guess-id order throughout, so this is the one
+      // line that says where they actually are - and a ladder ordered 5..1 is a
+      // mirror of the payload's, which changes which end word goes where.
+      `where those rungs sit now: ${currentPositions(middleRows).map((p) => (p === -1 ? '?' : p)).join(' ')}`,
       `answers read from the page: ${embedded.length ? embedded.map((e) => e.word).join(', ') : '(none found)'}`,
       `they chain into a ladder: ${chain ? chain.join(' -> ') : 'no'}`,
       `matched to rows on screen: ${matched ? matched.join(', ') : 'no'}  (${how})`,
