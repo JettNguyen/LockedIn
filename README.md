@@ -1,110 +1,135 @@
 # LockedIn
 
-A Chrome extension that solves LinkedIn's daily puzzle games and overlays the
-solution directly on the page — no clicking through the puzzle for you, no
-modifying the page's DOM, just a transparent layer showing you the answer.
+**Solves LinkedIn's daily puzzle games and shows you the answer, right on the board.**
 
-The overlay appears automatically when you open a supported game. You can also
-click the extension icon and hit **Solve** to trigger it manually. A **✕**
-button dismisses it. As you fill in cells yourself, each solved piece fades
-out of the overlay so you always know what's left.
+![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?logo=googlechrome&logoColor=white)
+![Games](https://img.shields.io/badge/games-7-2ea44f)
+![Page DOM](https://img.shields.io/badge/page%20DOM-never%20touched-8957e5)
+![External requests](https://img.shields.io/badge/external%20requests-none-0969da)
 
-## Supported games
+Open a supported game and the solution fades in over it — a floating layer, not
+a single change to the page underneath. Fill a cell in yourself and that piece
+of the overlay disappears, so what's still glowing is exactly what's still to do.
 
-| Game | How the overlay helps |
-|---|---|
-| **Queens** | Black square marker on each cell where a queen goes |
-| **Tango** | Sun/moon icon on each cell that needs a symbol |
-| **Mini Sudoku** | Digit on each empty cell |
-| **Zip** | Green line tracing the path, with a pulsing gold ring around the starting cell and an arrowhead at the finish |
-| **Patches** | Colored region outlines, with the cells you haven't placed yet hatched |
-| **Wend** | Thin colored path per word, ringed start cell and an arrowhead showing direction — drawn around the letters so the board stays readable |
-| **CrossClimb** | Drag order as a numbered badge per rung, plus each rung's answer spelled across its letter slots, read from the puzzle data the page ships |
+---
 
-## Usage
+## The games
+
+|     | Game | What you see |
+|:---:|------|--------------|
+| 👑 | **Queens** | A marker on every cell where a queen goes |
+| ☀️ | **Tango** | The sun or moon each empty cell needs |
+| 🔢 | **Mini Sudoku** | The digit for every empty cell |
+| 🔗 | **Zip** | One green line tracing the whole path, a pulsing ring at the start, an arrowhead at the finish |
+| 🧩 | **Patches** | Each region outlined in its own colour, with the cells you haven't placed yet hatched |
+| 🔤 | **Wend** | A thin coloured path per word, ringed at its first letter and arrowed toward its last — drawn *around* the letters so the board stays readable |
+| 🪜 | **CrossClimb** | Every rung's answer spelled across its own letter slots, plus a numbered badge showing the order to drag them into |
+
+## Install
 
 1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked** and select this folder
-4. Navigate to a supported LinkedIn game — the overlay appears automatically
+2. Turn on **Developer mode** (top right)
+3. Click **Load unpacked** and pick this folder
+4. Go to a LinkedIn game — the overlay appears on its own
 
-Or click the extension icon and hit **Solve** if you want to trigger it
-manually (e.g. after dismissing a previous overlay).
+## Using it
+
+- **It just shows up.** Opening a supported game is all it takes, whether you
+  land there directly or click through from the feed.
+- **✕ dismisses it** if you'd rather work unaided.
+- **Solve** in the extension popup brings it back, or forces a fresh attempt on
+  a board that's changed shape.
+- **It keeps up as you play.** Pieces fade out as you place them, and the whole
+  overlay re-solves itself when the board changes underneath it.
 
 ## When something goes wrong
 
-Click the extension icon and hit **Copy diagnostics**. That puts a report on
-your clipboard: which game matched the URL, why the last solve attempt ended
-the way it did, and — for Zip, Wend and CrossClimb — what the scraper actually
-read off the board. Paste it into a bug report and it's usually enough to
-locate the problem without a back-and-forth.
+> [!TIP]
+> Click the extension icon and hit **Copy diagnostics**. You get a report on
+> your clipboard: which game matched the URL, why the last attempt ended the
+> way it did, and — for Zip, Wend and CrossClimb — what the scraper actually
+> read off the board. That's usually enough to pin down the problem with no
+> back-and-forth.
 
-The same reports are on `window.LockedInDebug` (`status()`, `zip()`, `wend()`,
-`wendBoard()`, `crossclimb()`), but note those live in the content script's
-isolated world: the browser console won't see them until you switch its
-JavaScript context from `top` to `LockedIn`. The button avoids that entirely.
+The same reports live on `window.LockedInDebug` (`status()`, `zip()`, `wend()`,
+`wendBoard()`, `crossclimb()`). They run in the content script's isolated world,
+so the console won't see them until you switch its JavaScript context from `top`
+to **LockedIn** — the button avoids that entirely.
 
-## How it works
+## What it doesn't do
 
-Every game follows the same four-step shape:
+- **Nothing leaves your browser.** The only thing it ever loads is its own two
+  word lists, bundled inside the extension. There is no server, and no request
+  goes anywhere off your machine.
+- **No writes to LinkedIn's DOM.** The overlay is a separate fixed-position layer
+  appended to `document.body`. Your progress is always your own — the extension
+  never fills a square in for you.
+- **No accounts, no analytics, no storage.** Permissions are `activeTab` and
+  `scripting`, and it does nothing at all outside a game page.
 
-1. **Detect** — `content.js` checks the URL against every registered game's
-   `detect()` and calls whichever one matches. Adding a new game never
-   requires touching this file.
+---
 
-2. **Scrape** — each game reads the puzzle from the live page using stable
-   attributes (`data-testid`, `aria-label`, `data-cell-idx`, inline CSS custom
-   properties, etc.) rather than LinkedIn's hashed/minified class names, so it
-   keeps working across LinkedIn deploys. Where there's no stable attribute at
-   all — Zip's walls — the board is measured instead: a wall is identified by
-   being a thin bar lying along one edge of its cell. Run
-   `LockedInDebug.zip()` in the console on the Zip page to print the scraped
-   board and check the walls against what's on screen.
+<details>
+<summary><b>How a solve works</b></summary>
 
-3. **Solve** — a pure function (no DOM access) computes the answer from the
-   scraped data. Deterministic games (Queens, Tango, Sudoku, Zip, Patches) are
-   solved algorithmically. Wend tries to read the answer out of the DOM first
-   (the board numbers each letter with its position in its word), and only if
-   that fails does it search for a partition of the grid into paths of the
-   right lengths — checking each path against a word list, because there are
-   vast numbers of partitions with the right lengths and all but one of them
-   spell nothing. Whichever route produced a grouping, it is only drawn if
-   every path in it spells a real word: reading the DOM describes the board you
-   *have*, so on a board already filled in wrongly it would otherwise hand your
-   own mistake back as the answer. `LockedInDebug.wend()` prints the words it
-   landed on and `wendBoard()` prints what fits the grid at each length.
+<br>
 
-4. **Overlay** — `shared/overlay.js` draws a fixed-position layer over the
-   page. The puzzle's own DOM is never touched. The overlay tracks the grid's
-   position every frame (so it stays aligned on scroll/resize) and fades out
-   individual pieces as you fill them in.
+Every game follows the same four steps:
 
-   Suggestions are always drawn in a form the page itself never uses — Patches
-   regions are hatched rather than washed with a flat tint, because a flat tint
-   is exactly what LinkedIn paints a *placed* cell with, and an overlay you
-   can't tell apart from your own progress makes an untouched board look
-   finished.
+**1. Detect** — `content.js` checks the URL against every registered game's
+`detect()` and calls whichever matches. Adding a game never means touching it.
 
-The auto-solve in `content.js` runs on a heartbeat, not purely on DOM
-mutations. LinkedIn regularly lands its final render — or swaps the grid out
-from under a just-drawn overlay — in the last mutation batch a page ever emits,
-leaving a mutation-only trigger with nothing left to fire on. Mutations are
-still used, but only to retry sooner; the heartbeat is what guarantees a retry
+**2. Scrape** — each game reads the board from the live page using stable
+attributes (`data-testid`, `aria-label`, `data-cell-idx`, inline CSS custom
+properties) rather than LinkedIn's hashed class names, so it survives their
+deploys. Where there's no stable attribute at all — Zip's walls — the board is
+*measured* instead: a wall is a thin bar lying along one edge of its cell.
+
+**3. Solve** — a pure function with no DOM access computes the answer.
+Queens, Tango, Sudoku, Zip and Patches are solved algorithmically. Wend and
+CrossClimb first try to read the answer out of the page's own data, and fall
+back to search when that data shifts (see below).
+
+**4. Overlay** — `shared/overlay.js` draws a fixed-position layer over the page,
+tracks the grid's position every frame so it stays aligned through scrolling and
+resizing, and fades each piece out as you place it.
+
+Suggestions are always drawn in a form the page itself never uses. Patches
+regions are hatched rather than washed with a flat tint, because a flat tint is
+exactly what LinkedIn paints a *placed* cell with — an overlay you can't tell
+apart from your own progress makes an untouched board look finished.
+
+</details>
+
+<details>
+<summary><b>Two decisions that look odd until they don't</b></summary>
+
+<br>
+
+**The auto-solve runs on a heartbeat, not just on DOM mutations.** LinkedIn
+regularly lands its final render — or swaps the grid out from under a
+just-drawn overlay — in the last mutation batch a page ever emits, which leaves
+a mutation-only trigger with nothing left to fire on. Mutations are still
+watched, but only to retry *sooner*; the heartbeat is what guarantees a retry
 at all.
 
-The content script matches **all** of `linkedin.com`, not just `/games/*`, even
+**The content script matches all of `linkedin.com`**, not just `/games/*`, even
 though it does nothing anywhere else. Chrome only injects a content script on a
 real document load, so matching `/games/*` meant that reaching a puzzle the
-normal way — clicking through from the feed, which LinkedIn routes client-side
-— left no script in the page at all, and the overlay only ever appeared after a
-hard refresh or a manual **Solve** (which force-injects). Matching every
-LinkedIn page means the script is already loaded when the SPA routes into a
-game, and the heartbeat notices the URL change.
+normal way — clicking through from the feed, which LinkedIn routes client-side —
+left no script in the page at all, and the overlay only appeared after a hard
+refresh. Matching every LinkedIn page means the script is already there when the
+SPA routes into a game.
 
-## Project structure
+</details>
+
+<details>
+<summary><b>Project structure</b></summary>
+
+<br>
 
 ```
-manifest.json           Manifest V3, matches linkedin.com/* (see note above)
+manifest.json           Manifest V3, matches linkedin.com/*
 content.js              Thin dispatcher: detects the active game, calls its run()
 popup.html / popup.js   Extension popup (Solve button + status message)
 overlay.css             Shared styles (marker highlight, breathing animation, fade-on-complete)
@@ -130,18 +155,23 @@ games/
   patches/
     game.js             Constraint-propagation + backtracking solver and scraper combined
   wend/
-    game.js             Reads word order from LinkedIn's embedded position data and renders paths
+    game.js             Reads the word paths off the board, falling back to fitting real words onto the grid
   crossclimb/
     game.js             Reads the ladder out of the page's own puzzle data, falling back to a word-ladder constraint solver (no AI)
 ```
 
-## Adding a new game
+</details>
 
-1. Create `games/<name>/solver.js` — a pure function that takes plain data
-   (no DOM) and returns the answer, or `null` if unsolvable.
+<details>
+<summary><b>Adding a game</b></summary>
 
-2. Create `games/<name>/game.js` — scrapes the live page, calls the solver,
-   then calls `window.LockedInOverlay.show(...)`. End the file by registering:
+<br>
+
+1. Create `games/<name>/solver.js` — a pure function that takes plain data (no
+   DOM) and returns the answer, or `null` if unsolvable.
+
+2. Create `games/<name>/game.js` — scrapes the live page, calls the solver, then
+   calls `window.LockedInOverlay.show(...)`. End the file by registering:
 
    ```js
    window.LockedInGames = window.LockedInGames || [];
@@ -156,11 +186,16 @@ games/
 3. Add both files to `manifest.json`'s `content_scripts[0].js` array, after
    `shared/overlay.js` and before `content.js`.
 
-`content.js` and `popup.js` are already game-agnostic — no changes needed there.
+`content.js` and `popup.js` are already game-agnostic — nothing to change there.
 
-## Testing a solver in isolation
+</details>
 
-Solvers have zero DOM dependencies, so they can be tested directly in Node:
+<details>
+<summary><b>Testing a solver in Node</b></summary>
+
+<br>
+
+Solvers have zero DOM dependencies, so they run directly in Node.
 
 **Queens**
 ```js
@@ -177,8 +212,8 @@ console.log(solveQueens([
 ]));
 ```
 
-**Tango** — `given` is a `Map` of `"row,col" → 0|1` (Sun/Moon), `constraints`
-is a list of `{ r1, c1, r2, c2, type: 'eq'|'neq' }` pairs:
+**Tango** — `given` is a `Map` of `"row,col" → 0|1` (Sun/Moon), `constraints` is
+a list of `{ r1, c1, r2, c2, type: 'eq'|'neq' }` pairs:
 ```js
 const fs = require('fs');
 eval(fs.readFileSync('./games/tango/solver.js', 'utf8'));
@@ -205,8 +240,8 @@ console.log(solveSudoku({
 }));
 ```
 
-**Zip** — `waypoints` is a `Map` of `"row,col" → number` (ordered visit
-points), `walls` is a 2D array of `{ top, bottom, left, right }` booleans:
+**Zip** — `waypoints` is a `Map` of `"row,col" → number` (ordered visit points),
+`walls` is a 2D array of `{ top, bottom, left, right }` booleans:
 ```js
 const fs = require('fs');
 eval(fs.readFileSync('./games/zip/solver.js', 'utf8'));
@@ -219,37 +254,71 @@ console.log(solveZip({
 }));
 ```
 
-## What isn't solvable from the page
+</details>
 
-**CrossClimb** looked like it wouldn't be. Solving it *as a puzzle* turns on
-reading a clue — "Chowder ingredient" → `CLAM` — and that knowledge is nowhere
-in the DOM. But it turned out not to matter: LinkedIn hydrates its SPA from JSON
-parked in `<code>` elements, and the CrossClimb payload carries every rung's
-word plus a `solutionRungIndex` giving its place in the ladder. So a completely
-blank board solves outright, with nothing typed in and no clue interpreted.
+<details>
+<summary><b>The two word games, and why they're hard</b></summary>
 
-Because those key names are LinkedIn's and will eventually move, the payload is
-only believed once the words it yields independently chain into a single valid
+<br>
+
+### Wend
+
+Wend hides several words in a grid, each one a path of neighbouring letters. The
+board says how long each word is, and its own markup often says which letters
+belong together — but reading that markup describes the board you *have*, not
+the one you want. On a board you've already filled in wrongly it would hand your
+mistake straight back to you as the answer.
+
+So whatever proposed a grouping — the board's colours, its position numbering,
+or a search — it only reaches the screen if every path in it spells a real word.
+When nothing on the board can be trusted, real words are laid onto the grid
+instead and the one arrangement that covers every letter wins. The everyday
+9.4k-word list is searched first: a grid built out of DIME and MULCH can
+otherwise be "solved" with CARK and SLUT, both of which are, technically, in a
+359k-word dictionary.
+
+`LockedInDebug.wend()` prints the words it landed on; `wendBoard()` prints what
+fits the grid at each length.
+
+### CrossClimb
+
+CrossClimb looked like it wouldn't be solvable at all. Solving it *as a puzzle*
+turns on reading a clue — "Chowder ingredient" → `CLAM` — and that knowledge is
+nowhere in the DOM. It turned out not to matter: LinkedIn hydrates its SPA from
+JSON parked in `<code>` elements, and the CrossClimb payload carries every
+rung's word plus a `solutionRungIndex` giving its place in the ladder. A
+completely blank board solves outright, with nothing typed and no clue read.
+
+Those key names are LinkedIn's and will eventually move, so the payload is only
+believed once the words it yields independently chain into a single valid
 ladder. When they don't, it falls through to deduction from the ladder rule
 alone: the rungs must reorder into a chain where neighbours differ by exactly
 one letter and every rung is a real word. That works from whatever you've typed
-and reports only what the constraints force — the drag order, any blank rung the
-chain pins down, and the candidates for the locked end rungs. Measured over
+in and reports only what the constraints *force* — the drag order, any blank
+rung the chain pins down, and the candidates for the locked end rungs. Over
 random ladders drawn from common words, one blank rung is uniquely determined
-about two thirds of the time and two blanks about a quarter; a blank board isn't
+about two thirds of the time and two blanks about a quarter. A blank board isn't
 solvable that way at all, and it says so rather than inventing an answer.
 
-The fallback carries one caveat it reports rather than hides: a ladder read
-top-to-bottom and the same ladder read bottom-to-top are both valid chains, so
-until one of the locked end rungs is known the orientation is a genuine coin
-flip, and the overlay shows whichever direction is closer to how the rungs are
-already arranged. The payload path has no such ambiguity — `solutionRungIndex`
-states the direction outright.
+One thing neither route can settle on its own: a ladder read top-to-bottom and
+the same ladder read bottom-to-top are both valid, and LinkedIn accepts either.
+So the direction is taken from the board — whichever way up is closer to how
+your rungs are already arranged, and settled outright by a locked end rung once
+you've filled one in.
 
-**Pinpoint** isn't supported. The game gives five items and asks for the
-category, which is a pure semantic-knowledge task. Matching against WordNet
-handles clean taxonomic sets — five string instruments do share the ancestor
-"stringed instrument" — but real Pinpoint categories are mostly proper nouns and
-wordplay, and those fall straight through: of five Marvel actors, only one
-appears in WordNet at all, and a category like "___ Ball" shares no ancestor
-beyond "entity". A solver built on that would be wrong more often than right.
+</details>
+
+<details>
+<summary><b>Why Pinpoint isn't supported</b></summary>
+
+<br>
+
+Pinpoint gives you five items and asks for the category, which is pure semantic
+knowledge. Matching against WordNet handles clean taxonomic sets — five string
+instruments really do share the ancestor "stringed instrument" — but real
+Pinpoint categories are mostly proper nouns and wordplay, and those fall
+straight through: of five Marvel actors, only one appears in WordNet at all, and
+a category like "___ Ball" shares no ancestor beyond "entity". A solver built on
+that would be wrong more often than right.
+
+</details>
