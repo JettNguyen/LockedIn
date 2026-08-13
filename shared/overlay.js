@@ -61,7 +61,13 @@ window.LockedInOverlay = (function () {
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
 
-  function applyMarkerStyle(markerEl, rect) {
+  // 0.55 suits a glyph sharing its cell with whatever the page already prints
+  // there. A marker whose whole job is to show one character on an empty cell -
+  // a letter the user still has to type - wants more of the box than that, so
+  // games can ask for it per marker.
+  const DEFAULT_FONT_SCALE = 0.55;
+
+  function applyMarkerStyle(markerEl, rect, fontScale) {
     const inset = Math.min(rect.width, rect.height) * 0.1;
     const w = rect.width - inset * 2;
     const h = rect.height - inset * 2;
@@ -69,7 +75,7 @@ window.LockedInOverlay = (function () {
     markerEl.style.top = `${rect.top + inset}px`;
     markerEl.style.width = `${w}px`;
     markerEl.style.height = `${h}px`;
-    markerEl.style.fontSize = `${Math.min(w, h) * 0.55}px`;
+    markerEl.style.fontSize = `${Math.min(w, h) * (fontScale || DEFAULT_FONT_SCALE)}px`;
   }
 
   function positionDismissButton(btn, anchorRect) {
@@ -319,8 +325,8 @@ window.LockedInOverlay = (function () {
       }
 
       positionDismissButton(state.dismissBtn, state.anchorEl.getBoundingClientRect());
-      for (const { cellEl, markerEl, isFilled } of state.markers) {
-        applyMarkerStyle(markerEl, cellEl.getBoundingClientRect());
+      for (const { cellEl, markerEl, isFilled, fontScale } of state.markers) {
+        applyMarkerStyle(markerEl, cellEl.getBoundingClientRect(), fontScale);
         if (isFilled) markerEl.classList.toggle('li-marker--confirmed', isFilled(cellEl));
       }
       for (const sl of state.svgLines) updateSvgLine(sl);
@@ -342,6 +348,9 @@ window.LockedInOverlay = (function () {
    *   color?: string,            // hex color for the tint + icon/glyph (default gold)
    *   glyph?: string,             // plain-text content (e.g. '♛')
    *   html?: string,              // custom markup (e.g. an inline <svg>) - takes priority over glyph
+   *   fontScale?: number,         // text size as a fraction of the cell (default 0.55).
+   *                               // Raise it when the marker's text IS the answer and
+   *                               // the cell underneath is empty, as in CrossClimb's letters.
    *   isFilled?: (cellEl: Element) => boolean,
    * }>} opts.markers - one highlight per cell that still needs to be filled in.
    * @param {{cells: Element[], color?: string, isDrawn?: Function}} [opts.linePath] - optional
@@ -436,7 +445,7 @@ window.LockedInOverlay = (function () {
         };
       });
 
-    const markerEls = markers.map(({ cellEl, color, glyph, html, isFilled }) => {
+    const markerEls = markers.map(({ cellEl, color, glyph, html, isFilled, fontScale }) => {
       const markerEl = document.createElement('div');
       markerEl.className = 'li-marker';
       const tint = color || '#f5c542';
@@ -446,7 +455,7 @@ window.LockedInOverlay = (function () {
       if (html) markerEl.innerHTML = html; // always our own static, hardcoded markup - never page/user-derived content
       else markerEl.textContent = glyph || '';
       container.appendChild(markerEl);
-      return { cellEl, markerEl, isFilled };
+      return { cellEl, markerEl, isFilled, fontScale };
     });
 
     // Belt-and-suspenders alongside the rAF loop's own containment check:

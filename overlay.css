@@ -28,6 +28,9 @@
   justify-content: center;
   pointer-events: none;
   line-height: 1;
+  /* Marker text is read at a glance over a busy board, and LinkedIn's own body
+   * weight is too light to survive that at the size a board cell allows. */
+  font-weight: 800;
   user-select: none;
   box-sizing: border-box;
   border: 2px solid;
