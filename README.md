@@ -68,7 +68,11 @@ Every game follows the same four-step shape:
    that fails does it search for a partition of the grid into paths of the
    right lengths — checking each path against a word list, because there are
    vast numbers of partitions with the right lengths and all but one of them
-   spell nothing. `LockedInDebug.wend()` prints the words it landed on.
+   spell nothing. Whichever route produced a grouping, it is only drawn if
+   every path in it spells a real word: reading the DOM describes the board you
+   *have*, so on a board already filled in wrongly it would otherwise hand your
+   own mistake back as the answer. `LockedInDebug.wend()` prints the words it
+   landed on and `wendBoard()` prints what fits the grid at each length.
 
 4. **Overlay** — `shared/overlay.js` draws a fixed-position layer over the
    page. The puzzle's own DOM is never touched. The overlay tracks the grid's

@@ -17,6 +17,15 @@
 // PRIMARY STRATEGY: group cells by computed background-color.
 // FALLBACK STRATEGY: backtracking path solver using word lengths when
 //   computed colors are unavailable or produce the wrong group sizes.
+//
+// WHATEVER PRODUCED A GROUPING, it only reaches the screen if every path in it
+// spells a real word. Covering the board with joined-up paths of the right
+// lengths is not the same as finding the words, and the strategies that read
+// the board's own colours or position numbering describe the board you HAVE,
+// not the one you want: on a board you have already filled in wrongly they
+// reproduce your own mistake and present it as the answer, which is exactly
+// how this came to draw MIDE, ULAAC and DRFORM over a board and leave them
+// there. See checkUsable().
 
 (function () {
   // ─── DOM helpers ─────────────────────────────────────────────────────────
@@ -171,8 +180,61 @@
       if (!next) break;
       visited.add(next.idx);
       path.push(next);
+      cur = next;
     }
     return path;
+  }
+
+  // A colour group is a bag of cells; the order they read in is a separate
+  // question, and the only order that matters is the one that spells a word.
+  // Walking the group from an arbitrary end gives MIDE where the board says
+  // DIME - the same four cells, one of them a word - so search the group for
+  // the ordering that is one. Start markers are seeded first because a word can
+  // only read from its own start.
+  //
+  // A group is one word long, so this is a handful of steps, and it only ever
+  // runs on a grouping that is already known to be right.
+  function orderGroupAsWord(group, n, dictionary) {
+    if (!dictionary || group.length < 2) return null;
+    const byIdx = new Map(group.map((cell) => [cell.idx, cell]));
+    const path = [];
+    const used = new Set();
+    let answer = null;
+
+    function walk() {
+      if (path.length === group.length) {
+        const word = path.map((cell) => cell.letter).join('').toLowerCase();
+        if (dictionary.has(word)) answer = path.slice();
+        return;
+      }
+      const cur = path[path.length - 1];
+      const r = Math.floor(cur.idx / n);
+      const c = cur.idx % n;
+      for (const [dr, dc] of DIRS) {
+        const nr = r + dr;
+        const nc = c + dc;
+        if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
+        const next = byIdx.get(nr * n + nc);
+        if (!next || used.has(next.idx)) continue;
+        used.add(next.idx);
+        path.push(next);
+        walk();
+        path.pop();
+        used.delete(next.idx);
+        if (answer) return;
+      }
+    }
+
+    const starts = group.filter((cell) => cell.isStart);
+    for (const seed of (starts.length ? starts : group)) {
+      path.length = 0;
+      used.clear();
+      path.push(seed);
+      used.add(seed.idx);
+      walk();
+      if (answer) return answer;
+    }
+    return null;
   }
 
   // ─── Word-list utilities ──────────────────────────────────────────────────
@@ -228,13 +290,23 @@
   // word list turns "any partition that fits" into "the partition where every
   // path is a word", which is very nearly always unique.
   //
-  // The list itself lives in shared/wordlist.js, which caches it and resolves to
-  // null if it can't be fetched - every caller here treats a missing dictionary
-  // as "skip that constraint", so a failed load degrades to the old behaviour
-  // instead of breaking the solve.
+  // The lists live in shared/wordlist.js, which caches them and resolves to
+  // null if they can't be fetched - every caller here treats a missing
+  // dictionary as "skip that constraint", so a failed load degrades to the old
+  // behaviour instead of breaking the solve.
 
-  function loadDictionary() {
-    return window.LockedInWords.all();
+  // Two lists, used for two different jobs. `common` is what the board is
+  // searched with first: Wend's answers are everyday words, so the small list
+  // finds the intended partition and, being 40× smaller, finds it far sooner -
+  // and it can't cover the board with the obscurities the exhaustive list is
+  // full of. `all` is what a finished grouping is *checked* against, where
+  // rejecting a real word for being unusual would be the worse mistake.
+  async function loadDictionaries() {
+    const [all, common] = await Promise.all([
+      window.LockedInWords.all(),
+      window.LockedInWords.common(),
+    ]);
+    return { all, common };
   }
 
   // ─── Position-based reconstruction ────────────────────────────────────────
@@ -309,7 +381,7 @@
   // could be read either way round; a word laid down letter by letter knows
   // which end it started at, so the overlay's start ring lands on the right cell.
 
-  function placementsForLength(cells, cellsByIdx, n, length, dictionary) {
+  function placementsForLength(cells, cellsByIdx, n, length, dictionary, preferred) {
     const startsByLetter = new Map();
     for (const cell of cells) {
       const key = cell.letter.toLowerCase();
@@ -356,6 +428,16 @@
         extend(word, 1);
       }
     }
+
+    // The exhaustive list spells plenty of words nobody uses, and the cover
+    // search takes placements in the order it is handed them - which is how a
+    // board built out of DIME and MULCH gets "solved" with CARK and SLUT
+    // instead. Everyday words first, so the ordinary reading is the one found.
+    if (preferred) {
+      const isEveryday = (placement) =>
+        preferred.has(placement.map((cell) => cell.letter).join('').toLowerCase()) ? 0 : 1;
+      placements.sort((a, b) => isEveryday(a) - isEveryday(b));
+    }
     return placements;
   }
 
@@ -394,13 +476,13 @@
     }
   }
 
-  function solveByWordPlacement(cells, cellsByIdx, n, expectedLengths, dictionary, startIdxs) {
+  function solveByWordPlacement(cells, cellsByIdx, n, expectedLengths, dictionary, startIdxs, preferred) {
     if (!dictionary || !expectedLengths.length) return null;
     const useStarts = startIdxs && startIdxs.size === expectedLengths.length;
 
     const placementsByLength = new Map();
     for (const length of new Set(expectedLengths)) {
-      let placements = placementsForLength(cells, cellsByIdx, n, length, dictionary);
+      let placements = placementsForLength(cells, cellsByIdx, n, length, dictionary, preferred);
       if (useStarts) {
         placements = placements.filter(
           (p) => startIdxs.has(p[0].idx) && !p.slice(1).some((cell) => startIdxs.has(cell.idx))
@@ -523,7 +605,12 @@
 
   // ─── Board scraping ───────────────────────────────────────────────────────
 
-  function scrapeBoard(gridRoot, dictionary) {
+  function scrapeBoard(gridRoot, dicts) {
+    // What a candidate answer is checked against, and what the board is
+    // searched with - see loadDictionaries().
+    const dictionary = (dicts && dicts.all) || (dicts && dicts.common) || null;
+    const searchLists = [dicts && dicts.common, dicts && dicts.all].filter(Boolean);
+
     let cellEls = Array.from(gridRoot.children).filter(
       (el) => /^cell-\d+$/.test(el.dataset.testid || '')
     );
@@ -600,6 +687,25 @@
           return `lengths [${got.join(',')}] do not match word list [${want.join(',')}]`;
         }
       }
+
+      // And it has to spell something. Covering the board with joined-up paths
+      // of the right lengths is not the same as finding the words: several of
+      // the strategies below can do the first without the second, and one of
+      // them - reading the board's own colours or position numbering back off a
+      // board you have already filled in - will happily hand your own wrong
+      // answer back to you as the solution. A word read backwards is still the
+      // right cells, so flip it rather than reject it.
+      if (dictionary) {
+        for (const word of candidate) {
+          const letters = word.cells.map((c) => c.letter).join('').toLowerCase();
+          if (dictionary.has(letters)) continue;
+          if (dictionary.has([...letters].reverse().join(''))) {
+            word.cells.reverse();
+            continue;
+          }
+          return `"${letters.toUpperCase()}" is not a word`;
+        }
+      }
       return null;
     };
 
@@ -642,10 +748,13 @@
         words = [];
         let pi = 0;
         for (const [colorKey, group] of groups) {
-          let ordered;
-          if (hasDistinctPositions(group)) {
+          // The ordering that spells a word is the answer wherever one exists;
+          // the board's own numbering and a walk along the group are what's
+          // left when there's no dictionary to ask.
+          let ordered = orderGroupAsWord(group, n, dictionary);
+          if (!ordered && hasDistinctPositions(group)) {
             ordered = [...group].sort((a, b) => a.position - b.position);
-          } else {
+          } else if (!ordered) {
             const startCell = group.find((c) => c.isStart)
               || group.reduce((m, c) => c.idx < m.idx ? c : m, group[0]);
             ordered = followPath(startCell, cellsByIdx, n);
@@ -684,13 +793,16 @@
         for (const [colorVal, group] of groups) {
           const startCell = group.find((c) => c.isStart)
             || group.reduce((m, c) => c.idx < m.idx ? c : m, group[0]);
-          let ordered = followPath(startCell, cellsByIdx, n, (a, b) => {
-            const elA = elType === 'self' ? a.el : a.el.firstElementChild;
-            const elB = elType === 'self' ? b.el : b.el.firstElementChild;
-            if (!elA || !elB) return false;
-            return window.getComputedStyle(elA).getPropertyValue(prop).trim() ===
-                   window.getComputedStyle(elB).getPropertyValue(prop).trim();
-          });
+          let ordered = orderGroupAsWord(group, n, dictionary);
+          if (!ordered) {
+            ordered = followPath(startCell, cellsByIdx, n, (a, b) => {
+              const elA = elType === 'self' ? a.el : a.el.firstElementChild;
+              const elB = elType === 'self' ? b.el : b.el.firstElementChild;
+              if (!elA || !elB) return false;
+              return window.getComputedStyle(elA).getPropertyValue(prop).trim() ===
+                     window.getComputedStyle(elB).getPropertyValue(prop).trim();
+            });
+          }
           if (ordered.length !== group.length) ordered = [...group].sort((a, b) => a.idx - b.idx);
           const color = /^#[0-9a-f]{3,8}$/i.test(colorVal) || /^rgba?\(/.test(colorVal)
             ? colorVal : PALETTE[pi % PALETTE.length];
@@ -711,11 +823,16 @@
     // gives us nothing to constrain it with.
     // Words-onto-board first; path-carving only if there's no dictionary to
     // drive it, since that route can only ever guess at which pieces are words.
-    if (!words && expectedLengths.length && dictionary) {
+    if (!words && expectedLengths.length && searchLists.length) {
       const startIdxs = new Set(cells.filter((c) => c.isStart).map((c) => c.idx));
-      const placed = solveByWordPlacement(cells, cellsByIdx, n, expectedLengths, dictionary, startIdxs);
-      if (placed) {
-        words = placed.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
+      for (const list of searchLists) {
+        const placed = solveByWordPlacement(
+          cells, cellsByIdx, n, expectedLengths, list, startIdxs, dicts && dicts.common
+        );
+        if (placed) {
+          words = placed.map((group, i) => ({ color: PALETTE[i % PALETTE.length], cells: group }));
+          break;
+        }
       }
     }
 
@@ -725,10 +842,19 @@
     if (!words && expectedLengths.length) {
       const startIdxs = new Set(cells.filter((c) => c.isStart).map((c) => c.idx));
       const attempts = [];
-      if (dictionary && startIdxs.size) attempts.push({ startIdxs, dictionary });
-      if (dictionary) attempts.push({ dictionary });
-      if (startIdxs.size) attempts.push({ startIdxs });
-      attempts.push({}); // last resort: any partition with the right lengths
+      for (const list of searchLists) {
+        if (startIdxs.size) attempts.push({ startIdxs, dictionary: list });
+        attempts.push({ dictionary: list });
+      }
+      // Carving the board into paths of the right lengths and hoping is only
+      // worth trying when there's no word list to do better with - with one
+      // loaded, every partition it can reach that spells nothing is rejected
+      // downstream anyway, and it would spend the whole step budget getting
+      // there.
+      if (!dictionary) {
+        if (startIdxs.size) attempts.push({ startIdxs });
+        attempts.push({});
+      }
 
       for (const opts of attempts) {
         const solved = solveByWordLengths(cells, cellsByIdx, n, expectedLengths, opts);
@@ -764,9 +890,9 @@
     if (!gridRoot) return { ok: false, error: 'Could not find the Wend puzzle grid on this page.' };
 
     // Optional: null just means the word-shape constraint gets skipped.
-    const dictionary = await loadDictionary();
+    const dicts = await loadDictionaries();
 
-    const scrape = scrapeBoard(gridRoot, dictionary);
+    const scrape = scrapeBoard(gridRoot, dicts);
     if (!scrape.ok) return scrape;
 
     const rowsByLength   = buildWordListRowsByLength();
@@ -812,10 +938,11 @@
     const gridRoot = findGrid();
     if (!gridRoot) return 'No Wend grid on this page.';
 
-    const dictionary = await loadDictionary();
+    const dicts      = await loadDictionaries();
+    const dictionary = dicts.all || dicts.common;
     const lengths    = getExpectedWordLengths();
     const sum        = lengths.reduce((a, b) => a + b, 0);
-    const scrape     = scrapeBoard(gridRoot, dictionary);
+    const scrape     = scrapeBoard(gridRoot, dicts);
     const d          = scrape.diag || {};
 
     const out = [
@@ -823,7 +950,8 @@
       `letters on board: ${d.letters}`,
       `word-list rows: ${findWordListRows().length}`,
       `expected lengths: [${lengths.join(', ')}] = ${sum}`,
-      `dictionary: ${dictionary ? `${dictionary.size} words` : 'FAILED TO LOAD'}`,
+      `dictionary: ${dicts.all ? `${dicts.all.size} words` : 'FAILED TO LOAD'}` +
+        `, common: ${dicts.common ? `${dicts.common.size} words` : 'FAILED TO LOAD'}`,
     ];
 
     // The whole solve is built on these two numbers agreeing. If they do not,
@@ -860,7 +988,7 @@
   async function debugBoard() {
     const gridRoot = findGrid();
     if (!gridRoot) return 'No Wend grid on this page.';
-    const dictionary = await loadDictionary();
+    const dicts = await loadDictionaries();
     const lengths = getExpectedWordLengths();
 
     const cellEls = Array.from(gridRoot.children).filter((el) => /^cell-\d+$/.test(el.dataset.testid || ''));
@@ -884,12 +1012,18 @@
     lines.push(`letters: ${cells.length}   word lengths: [${lengths.join(', ')}] = ${lengths.reduce((a, b) => a + b, 0)}`);
     lines.push(`start indicators: ${cells.filter((c) => c.isStart).length}`);
 
-    if (!dictionary) { lines.push('dictionary: FAILED TO LOAD'); return lines.join('\n'); }
-    for (const length of new Set(lengths)) {
-      const placements = placementsForLength(cells, cellsByIdx, n, length, dictionary);
-      const words = [...new Set(placements.map((p) => p.map((c) => c.letter).join('')))];
-      lines.push(`  length ${length}: ${placements.length} placement(s)` +
-                 (words.length ? ` — ${words.slice(0, 8).join(', ')}` : ' — NONE: no dictionary word of this length fits the board'));
+    // Both lists, because the board is searched with the common one first and
+    // only falls back to the exhaustive one - a length that fits nothing common
+    // says which of the two found the answer, or that neither can.
+    for (const [label, dictionary] of [['common', dicts.common], ['full', dicts.all]]) {
+      if (!dictionary) { lines.push(`${label} dictionary: FAILED TO LOAD`); continue; }
+      lines.push(`${label} dictionary (${dictionary.size} words):`);
+      for (const length of new Set(lengths)) {
+        const placements = placementsForLength(cells, cellsByIdx, n, length, dictionary);
+        const words = [...new Set(placements.map((p) => p.map((c) => c.letter).join('')))];
+        lines.push(`  length ${length}: ${placements.length} placement(s)` +
+                   (words.length ? ` — ${words.slice(0, 8).join(', ')}` : ' — NONE: no word of this length fits the board'));
+      }
     }
     return lines.join('\n');
   }
