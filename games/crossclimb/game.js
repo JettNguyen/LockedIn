@@ -27,9 +27,11 @@
 // fit". The fallback is the order LinkedIn lists the rungs in, cross-checked
 // against whatever clue IS on screen.
 //
-// That is only trusted once the words independently chain into a single valid
-// ladder, because the key names are LinkedIn's and will eventually move. When
-// they do, this falls back to the deduction below rather than misreporting.
+// The ladder's order comes from `solutionRungIndex`, checked by confirming each
+// neighbour really is one letter away. If those keys ever move - they are
+// LinkedIn's, and they will - the order is deduced from the words instead, and
+// failing that the whole payload is dropped for the deduction below rather than
+// misreported.
 //
 // FALLBACK: the ladder rule alone. Reading "Chowder ingredient" and producing
 // CLAM needs world knowledge the DOM hasn't got, but the rungs must still
@@ -504,7 +506,7 @@
     let payloadPositions = null;
     let fromPayload = false;
     {
-      const chain = embedded.length >= middleRows.length ? chainWords(embedded.map((e) => e.word)) : null;
+      const chain = embedded.length >= middleRows.length ? ladderFromEntries(embedded) : null;
       const matched = chain ? rungsToRows(rows, middleRows, embedded, chain) : null;
       if (matched) {
         known = matched;
@@ -866,6 +868,30 @@
     return a.join() === [...b].reverse().join() ? a : null;
   }
 
+  // The ladder the payload describes, as words in order from one end to the
+  // other.
+  //
+  // solutionRungIndex says outright where each rung belongs, so when the
+  // payload numbers every one of them, ranking by that number IS the ladder -
+  // and it's checked by confirming each neighbour really is one letter away.
+  //
+  // Deducing the order from the words alone is the fallback, not the rule,
+  // because a set of words can chain more than one way and then it deduces
+  // nothing. ROVER/RIVER/COVER/DIVER/COVET/DOVER/COMET is a real puzzle that
+  // orders four different ways; asking the words dropped a ladder the payload
+  // had already numbered, and the whole read-the-answer path fell back to
+  // "too many ladders still fit" on a board LinkedIn had handed us outright.
+  function ladderFromEntries(entries) {
+    if (entries.length < 3) return null;
+    const indices = entries.map((e) => e.index);
+    if (indices.every(Number.isInteger) && new Set(indices).size === indices.length) {
+      const ordered = [...entries].sort((a, b) => a.index - b.index).map((e) => e.word);
+      const chains = ordered.every((w, i) => i === 0 || hammingDiff(ordered[i - 1], w) === 1);
+      if (chains) return ordered;
+    }
+    return chainWords(entries.map((e) => e.word));
+  }
+
   function normalizeClue(text) {
     return (text || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '').trim();
   }
@@ -999,7 +1025,7 @@
     if (!wordLength) return 'Could not tell how long the answers are.';
 
     const embedded = scrapeEmbeddedRungs(wordLength);
-    const chain = chainWords(embedded.map((e) => e.word));
+    const chain = ladderFromEntries(embedded);
     // Which strategy claimed the mapping matters as much as the mapping does -
     // the first two are exact, the third is an assumption about the board's
     // original layout that a dragged rung invalidates.
