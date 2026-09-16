@@ -8,18 +8,21 @@
 // constraint (the "=" or "x" between two adjacent cells) is read from a
 // nested svg's data-testid ("edge-equal" | "edge-cross").
 //
-// ACTION REQUIRED (already worked around, but worth knowing): the DOM gives
-// no class or attribute saying whether an edge marker constrains the cell to
-// its right or the cell below it - both directions render the same square
-// icon, positioned via hashed CSS classes I can't read semantics from
-// statically. I confirmed this is genuinely ambiguous by hand-deriving
-// constraints from the pasted HTML and finding the puzzle unsatisfiable
-// under a "assume horizontal" guess. Rather than guess, inferEdgeDirection()
-// below measures the marker's actual on-screen position relative to its
-// cell at solve time (getBoundingClientRect()) and picks whichever axis it's
-// offset along - this needs a live page and can't be verified from static
-// HTML, so the first time you run this on a real puzzle, check the
-// highlighted Suns/Moons actually satisfy the visible "=" / "x" marks.
+// Two things about edge markers are worth knowing:
+//
+// A cell can carry MORE than one marker - the top-left cell often has both a
+// "=" to its right and a "=" below it. Read every marker in the cell, not
+// just the first one, or the solver quietly solves a looser puzzle and hands
+// back a grid that breaks the mark you can see on screen.
+//
+// The DOM also gives no class or attribute saying which neighbor a marker
+// constrains - every direction renders the same square icon, positioned via
+// hashed CSS classes I can't read semantics from statically. So
+// inferEdgeDirection() below measures the marker's actual on-screen position
+// relative to its cell at solve time (getBoundingClientRect()) and picks the
+// neighbor it sits toward. That needs a live page, so when this starts
+// missing puzzles again, check the highlighted Suns and Moons against the
+// visible "=" and "x" marks first.
 
 (function () {
   // Matching Tango's own palette.
@@ -32,23 +35,27 @@
     return wrapper.querySelector('[data-testid="interactive-grid"]');
   }
 
-  function inferEdgeDirection(cellEl, edgeSvg, row, col, n) {
+  // Which neighbor does this marker sit between us and? Ranked best-first by
+  // the direction it's offset toward, then by whatever neighbor is left, so a
+  // marker whose measurement is noisy still lands somewhere sensible. `taken`
+  // holds the neighbors this cell's earlier markers already claimed, which
+  // keeps two markers on one cell from both grabbing the same side.
+  function inferEdgeDirection(cellEl, edgeSvg, row, col, n, taken) {
     const cellRect = cellEl.getBoundingClientRect();
     const edgeRect = edgeSvg.getBoundingClientRect();
     const dx = edgeRect.left + edgeRect.width / 2 - (cellRect.left + cellRect.width / 2);
     const dy = edgeRect.top + edgeRect.height / 2 - (cellRect.top + cellRect.height / 2);
 
-    const wantsHorizontal = Math.abs(dx) >= Math.abs(dy);
-    const canGoRight = col + 1 < n;
-    const canGoDown = row + 1 < n;
+    const horizontal = { row, col: dx < 0 ? col - 1 : col + 1 };
+    const vertical = { row: dy < 0 ? row - 1 : row + 1, col };
+    const ranked = Math.abs(dx) >= Math.abs(dy) ? [horizontal, vertical] : [vertical, horizontal];
+    ranked.push({ row, col: col + 1 }, { row: row + 1, col }, { row, col: col - 1 }, { row: row - 1, col });
 
-    if (wantsHorizontal && canGoRight) return { row, col: col + 1 };
-    if (!wantsHorizontal && canGoDown) return { row: row + 1, col };
-    // Geometry disagreed with what's actually possible at a grid edge (e.g.
-    // measurement noise on the last column) - fall back to whichever
-    // direction is actually available.
-    if (canGoRight) return { row, col: col + 1 };
-    if (canGoDown) return { row: row + 1, col };
+    for (const target of ranked) {
+      if (target.row < 0 || target.row >= n || target.col < 0 || target.col >= n) continue;
+      if (taken.has(`${target.row},${target.col}`)) continue;
+      return target;
+    }
     return null;
   }
 
@@ -92,13 +99,16 @@
       if (contentSvg.dataset.testid === 'cell-zero') given.set(`${row},${col}`, 0);
       else if (contentSvg.dataset.testid === 'cell-one') given.set(`${row},${col}`, 1);
 
-      const edgeSvg = cellEl.querySelector('[data-testid="edge-cross"], [data-testid="edge-equal"]');
-      if (edgeSvg) {
+      // A cell can hold several markers (right and below), so take them all.
+      const edgeSvgs = cellEl.querySelectorAll('[data-testid="edge-cross"], [data-testid="edge-equal"]');
+      const taken = new Set();
+      for (const edgeSvg of edgeSvgs) {
         const type = edgeSvg.dataset.testid === 'edge-cross' ? 'neq' : 'eq';
-        const target = inferEdgeDirection(cellEl, edgeSvg, row, col, n);
+        const target = inferEdgeDirection(cellEl, edgeSvg, row, col, n, taken);
         if (!target) {
           return { ok: false, error: `Could not resolve the constraint neighbor for cell (row ${row + 1}, column ${col + 1}).` };
         }
+        taken.add(`${target.row},${target.col}`);
         constraints.push({ r1: row, c1: col, r2: target.row, c2: target.col, type });
       }
     }
